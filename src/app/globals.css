@@ -1,0 +1,241 @@
+@import "tailwindcss";
+
+/*
+  Hue is reserved for meaning: punctuality (green, amber, red) and model output (violet).
+  Tailwind's default colours, radii and shadows are deleted so that an off-system class
+  such as bg-slate-500 or rounded-2xl generates nothing.
+*/
+@theme {
+  --color-*: initial;
+  --radius-*: initial;
+  --shadow-*: initial;
+
+  --color-white: #ffffff;
+  --color-canvas: #f6f4ef;
+  --color-surface: #ffffff;
+  --color-sunken: #eeebe4;
+  --color-line: #ddd8ce;
+  --color-line-strong: #847f75;
+
+  --color-ink-900: #131c2b;
+  --color-ink-700: #34404f;
+  --color-ink-600: #4a5666;
+  --color-ink-500: #5e6978;
+  --color-ink-400: #8a94a2;
+
+  --color-brand-700: #164b73;
+  --color-brand-600: #1d5f92;
+  --color-brand-200: #bfd8ea;
+  --color-brand-50: #eaf2f8;
+
+  --color-ontime-700: #17663f;
+  --color-ontime-600: #1f8553;
+  --color-ontime-200: #b7dbc6;
+  --color-ontime-50: #e9f4ee;
+
+  --color-atrisk-700: #7a4b00;
+  --color-atrisk-600: #b26f00;
+  --color-atrisk-200: #efd49a;
+  --color-atrisk-50: #fcf4e1;
+
+  --color-delayed-700: #a0281f;
+  --color-delayed-600: #c4372c;
+  --color-delayed-200: #f1bbb4;
+  --color-delayed-50: #fcece9;
+
+  --color-held-700: #222c3a;
+
+  --color-stale-700: #525b66;
+  --color-stale-600: #6e7782;
+  --color-stale-200: #c9cdd3;
+  --color-stale-50: #f1f2f4;
+
+  --color-delivered-700: #3a4654;
+  --color-delivered-200: #cdd2d8;
+
+  --color-ai-700: #4b37b3;
+  --color-ai-600: #5e4ad0;
+  --color-ai-200: #cfc7f3;
+  --color-ai-50: #f2effd;
+
+  --font-sans: "IBM Plex Sans", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+  --text-2xs: 0.6875rem;
+  --text-2xs--line-height: 1rem;
+
+  --spacing-topbar: 3.5rem;
+  --spacing-demobar: 2.5rem;
+  --spacing-rail: 25rem;
+  --spacing-drawer: 30rem;
+  --container-portal: 67rem;
+
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+
+  --shadow-overlay: 0 6px 16px -4px #131c2b29;
+  --shadow-drawer: -12px 0 32px -12px #131c2b2e;
+
+  --ease-out: cubic-bezier(0.2, 0, 0, 1);
+  --default-transition-duration: 120ms;
+  --default-transition-timing-function: var(--ease-out);
+
+  /* One animation under two names: alternating them restarts it on an element that stays mounted. */
+  --animate-flash: flash 1600ms var(--ease-out) 1;
+  --animate-flash-again: flash-again 1600ms var(--ease-out) 1;
+  --animate-enter: enter 200ms var(--ease-out);
+  --animate-drawer: drawer 200ms var(--ease-out);
+  --animate-scrim: scrim 200ms var(--ease-out);
+  --animate-skeleton: skeleton-in 0s 150ms both, skeleton-pulse 1600ms ease-in-out 150ms infinite;
+
+  @keyframes flash {
+    from {
+      background-color: var(--color-brand-50);
+    }
+    to {
+      background-color: transparent;
+    }
+  }
+  @keyframes flash-again {
+    from {
+      background-color: var(--color-brand-50);
+    }
+    to {
+      background-color: transparent;
+    }
+  }
+  @keyframes enter {
+    from {
+      opacity: 0;
+      transform: translateY(var(--enter-from, 4px));
+    }
+  }
+  @keyframes drawer {
+    from {
+      opacity: 0;
+      transform: translateX(1.5rem);
+    }
+  }
+  @keyframes scrim {
+    from {
+      opacity: 0;
+    }
+  }
+  @keyframes skeleton-in {
+    from {
+      visibility: hidden;
+    }
+  }
+  @keyframes skeleton-pulse {
+    50% {
+      opacity: 0.55;
+    }
+  }
+}
+
+/* While a drawer is open: for what has to move out of its column. */
+@custom-variant beside-drawer (:root:has([data-drawer]) &);
+
+/*
+  Unknown, not late: the only place a hatch appears is a stale pill and the rail up to "Now".
+  It is faint by default because the pill prints text on it; the rail, which carries none,
+  raises --hatch-ink.
+*/
+@utility bg-hatch {
+  background-image: repeating-linear-gradient(
+    135deg,
+    transparent 0 3px,
+    var(--hatch-ink, #525b6633) 3px 4px
+  );
+}
+
+/* The caps label of table headers, menu groups and the sections of a panel. */
+@utility text-label {
+  @apply text-2xs font-medium tracking-wider text-ink-600 uppercase;
+}
+
+/* New or changed, and not yet looked at: a 3px bar on the left edge. */
+@utility brand-bar {
+  box-shadow: inset 3px 0 0 var(--color-brand-600);
+}
+
+@utility focus-outline {
+  outline: 2px solid var(--focus-color);
+  outline-offset: 2px;
+}
+
+/*
+  One link makes a whole row or card clickable while every other control in it stays a
+  separate tab stop. The focus ring moves to the stretched area, drawn inside its edge.
+*/
+@utility link-stretched {
+  &::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+  }
+  &:focus-visible {
+    outline-style: none;
+  }
+  &:focus-visible::after {
+    outline: 2px solid var(--focus-color);
+    outline-offset: -2px;
+  }
+}
+
+/*
+  The row or card around a stretched link. Every other control in it is lifted above the
+  link's area, so none can end up underneath it and out of reach. The selector carries no
+  specificity: any utility on the control still wins.
+*/
+@utility link-stretched-host {
+  position: relative;
+  :where(&) :where(a, button, input, select, textarea, summary):where(:not(.link-stretched)) {
+    position: relative;
+    z-index: 10;
+  }
+}
+
+@layer base {
+  :root {
+    --focus-color: var(--color-brand-600);
+    color-scheme: light;
+    font-synthesis: none;
+    scroll-padding-block: calc(var(--spacing-topbar) + 1rem) calc(var(--spacing-demobar) + 1rem);
+  }
+
+  body {
+    min-height: 100dvh;
+    background-color: var(--color-canvas);
+    color: var(--color-ink-900);
+    font-size: var(--text-sm);
+    line-height: var(--text-sm--line-height);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--focus-color);
+    outline-offset: 2px;
+  }
+
+  ::selection {
+    background-color: var(--color-brand-200);
+    color: var(--color-ink-900);
+  }
+
+  ::placeholder {
+    color: var(--color-ink-500);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    ::before,
+    ::after {
+      transition-duration: 0s !important;
+      animation-duration: 0s !important;
+      animation-iteration-count: 1 !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
