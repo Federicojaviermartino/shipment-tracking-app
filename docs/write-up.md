@@ -159,3 +159,25 @@ lives in the browser.
 milestones: the two things an importer actually plans on. A mobile view for customers. Notices in
 the customer's language. Assignment, which is what forces stored cases. The learned estimator, once
 enough shipments per lane have completed to calibrate it.
+
+## 5. How it was built
+
+Specification first, AI coding agents second, checks throughout.
+
+- **Design.** Five independent proposals, each written from one lens (product, AI value, domain and
+  architecture, synthetic data, visual design), then two adversarial reviews: one as a CTO, one as a
+  logistics veteran. The reviews cut the scope sharply and corrected the domain: one ocean lane
+  instead of two, no invented percentages, a clock frozen on a working day, DAP semantics.
+- **Specification.** The outcome was a written specification in six parts (architecture, domain,
+  world, application, interface, testing). Every implementation agent started from it, so the context
+  each one worked with was the same and was small.
+- **Implementation.** Agents worked in stages, with disjoint file ownership and a written hand-over
+  between stages: inner layers, outer layers, the design system in parallel, then the three screens
+  in parallel against the gateway's view types.
+- **Verification.** Nothing was accepted on an agent's word: lint-enforced layer boundaries, a golden
+  test of all 23 shipments written from the specification, mutation spot checks against the test
+  suite, screenshots read before sign-off, and an end-to-end test that caught a real state bug
+  between the two role layouts.
+
+That method explains the size of the repository. End to end, the build took about seven hours of
+elapsed time.
