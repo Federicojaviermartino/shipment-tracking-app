@@ -1,7 +1,7 @@
 # Estela: shipment visibility
 
-Write-up for the Shipment Tracking App technical test. The prototype is in the repository; its README
-opens with one command and an eight-step demo.
+**Federico Javier Martino.** Write-up for the Shipment Tracking App technical test. The prototype is
+in the repository; its README opens with one command and an eight-step demo.
 
 ## 1. The cut
 
