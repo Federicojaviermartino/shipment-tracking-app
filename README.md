@@ -67,20 +67,22 @@ src/
                  dates and the published one, staleness, exceptions and clocks, the playbook, the
                  customer projection, perimeter, filters. No framework, no I/O, no clock.
   application/   Ports and the Estela gateway: the only thing the UI calls. Ingestion, commands,
-                 view types, and the deterministic text of every sentence on screen.
+                 view types, and most of the wording the screens show.
   adapters/
     operators/   One anti-corruption adapter per operator: schema, mapping table, parser.
     memory/      Event log (persisted and broadcast across tabs), clocks, the scripted demo feed.
     ai-mock/     Deterministic stand-ins for the five AI ports.
   fixtures/      The synthetic world: 3 sites, 4 operators, 5 accounts, 23 shipments, 4 demo events.
   composition/   The one place where ports meet adapters. Framework-free.
-  ui/            Design system (kit), shell and the screens. Talks to `application` only.
+  ui/            Design system (kit), shell and the screens. Calls the gateway only; it may use the
+                 domain's types and time helpers, never adapters or fixtures.
   app/           Next.js routes: thin.
 e2e/             One Playwright spec: the demo flow.
 ```
 
 The dependency rule (`domain ← application ← adapters ← composition ← ui`) and a ban on reading the
-wall clock outside the clock adapter are enforced by ESLint (`eslint.config.mjs`), not by convention.
+wall clock outside the clock adapters and the composition root are enforced by ESLint
+(`eslint.config.mjs`), for aliased and relative imports alike.
 
 | Operator                            | Feed                                                         | Read by                                             |
 | ----------------------------------- | ------------------------------------------------------------ | --------------------------------------------------- |
