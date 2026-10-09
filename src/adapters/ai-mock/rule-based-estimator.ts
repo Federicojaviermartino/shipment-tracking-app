@@ -1,12 +1,11 @@
 import type { EstimatorInput, EtaEstimator } from "@/application/ports/eta-estimator";
-import { reportNoun } from "@/application/text/format";
 import { assertNever } from "@/domain/assert-never";
 import type { EstelaEstimate, Estimate, EstimateStep, EstimateStepSource } from "@/domain/estimate";
+import { DOCUMENT_LABEL } from "@/domain/labels";
 import { destinationZone, type MilestoneCode, type Place, type Shipment } from "@/domain/shipment";
-import { nextExpectation, type Expectation } from "@/domain/staleness";
+import { hasSailed } from "@/domain/stage";
 import {
   dayInstant,
-  formatStamp,
   HOUR,
   instantAt,
   isPast,
@@ -18,7 +17,7 @@ import {
   type Precision,
   type Zone,
 } from "@/domain/time";
-import { findMilestone, milestonesOf, openHolds, type MilestoneEntry } from "@/domain/timeline";
+import { milestonesOf, openHolds, type HoldEntry, type MilestoneEntry } from "@/domain/timeline";
 
 /** How operations read the provenance of an estimate: there is no learned model behind it yet. */
 export const ESTIMATE_BASIS = "Rule-based estimate";
@@ -43,11 +42,22 @@ const WORKING_DAYS_ONLY: ReadonlySet<MilestoneCode> = new Set([
   "IMPORT_RELEASED",
 ]);
 
-const CUSTOMS_ASSUMPTION = "if the corrected invoice reaches the broker today";
+const CUSTOMS_UNKNOWN_ASSUMPTION =
+  "if customs releases the goods on the next working day; what it needs is not known yet";
 const CARRIER_ROUND_ASSUMPTION = "if the carrier releases the goods for that round";
 const CARRIER_TODAY_ASSUMPTION = "if the carrier releases the goods today";
 
 type Point = { at: Instant; precision: Precision };
+
+/** What a release on the next working day depends on, as far as the hold itself says. */
+function customsAssumption(hold: HoldEntry | undefined): string {
+  if (!hold?.requires) return CUSTOMS_UNKNOWN_ASSUMPTION;
+  const document =
+    hold.requires === "commercial_invoice"
+      ? "invoice"
+      : DOCUMENT_LABEL[hold.requires].toLowerCase();
+  return `if the corrected ${document} reaches the broker today`;
+}
 
 function stepLabel(code: MilestoneCode, place: Place): string {
   switch (code) {
@@ -124,19 +134,6 @@ function firmingEvent(code: MilestoneCode, place: Place): string {
   }
 }
 
-function withheldReason(expectation: Expectation, input: EstimatorInput): string {
-  const { reason } = expectation;
-  if (reason.kind === "telematics_silence") {
-    const name =
-      input.operators.find((operator) => operator.id === reason.source)?.name ?? reason.source;
-    const hours = Math.floor((input.now - reason.lastSignalAt) / HOUR);
-    return `no position from ${name} for ${hours} h`;
-  }
-  const { milestone, expected } = reason;
-  const when = formatStamp(expected.at, expected.precision, milestone.place.zone);
-  return `${reportNoun(milestone.code)} at ${milestone.place.name}, expected ${when}, has not been reported`;
-}
-
 /** A day is kept at noon UTC, so that it reads as the same date wherever it is looked at. */
 function normalise(at: Instant, precision: Precision, zone: Zone): Point {
   return precision === "day"
@@ -161,8 +158,7 @@ function onWorkingDay(point: Point, zone: Zone): Point {
 
 /** The milestone customs is holding back: the import release once the vessel has sailed. */
 function customsRelease(input: EstimatorInput): MilestoneCode {
-  const sailed = findMilestone(input.timeline, "VESSEL_DEPARTED")?.actual !== undefined;
-  return sailed ? "IMPORT_RELEASED" : "EXPORT_RELEASED";
+  return hasSailed(input.timeline) ? "IMPORT_RELEASED" : "EXPORT_RELEASED";
 }
 
 function nextDeparture(shipment: Shipment, milestoneKey: string, now: Instant): Instant | null {
@@ -175,19 +171,16 @@ function nextDeparture(shipment: Shipment, milestoneKey: string, now: Instant): 
 function estimate(input: EstimatorInput): EstelaEstimate {
   const { shipment, timeline, now } = input;
 
-  const expectation = nextExpectation(timeline);
-  if (expectation && now > expectation.by) {
-    return { withheld: true, reason: withheldReason(expectation, input) };
-  }
-
+  // The timeline says how far the cargo has got. A customs gate confirmed ahead of it (an import
+  // entry lodged at sea) is neither where the chain starts nor a step still to estimate.
   const planned = milestonesOf(timeline).filter((entry) => !entry.unplanned);
-  const lastDone = planned.findLastIndex((entry) => entry.actual !== undefined);
-  const remaining = planned.slice(lastDone + 1);
+  const next = planned.findIndex((entry) => entry.state === "next");
+  const remaining = next === -1 ? [] : planned.slice(next).filter((entry) => !entry.actual);
   const first = remaining[0];
   if (!first) return { withheld: true, reason: "the shipment has been delivered" };
 
   const holds = openHolds(timeline);
-  const customsHeld = holds.some((hold) => hold.hold === "customs");
+  const customsHold = holds.find((hold) => hold.hold === "customs");
   const carrierHeld = holds.some((hold) => hold.hold === "carrier");
   const releaseCode = customsRelease(input);
   const carrierRound = carrierHeld
@@ -201,7 +194,7 @@ function estimate(input: EstimatorInput): EstelaEstimate {
 
   // A booking is paperwork, not movement: a late confirmation does not push the truck. The
   // chain is anchored on the last thing that physically or legally happened to the cargo.
-  const anchor = planned[lastDone];
+  const anchor = planned[next - 1];
   let previous: { entry: MilestoneEntry; point: Point } | null =
     anchor?.actual && anchor.code !== "BOOKED"
       ? { entry: anchor, point: { at: anchor.actual.at, precision: anchor.actual.precision } }
@@ -242,7 +235,7 @@ function estimate(input: EstimatorInput): EstelaEstimate {
       }
     }
 
-    if (customsHeld && entry.code === releaseCode) {
+    if (customsHold && entry.code === releaseCode) {
       const releaseDay = nextWorkingDay(localDate(now, zone));
       const release: Point =
         point.precision === "day"
@@ -252,7 +245,7 @@ function estimate(input: EstimatorInput): EstelaEstimate {
         point = release;
         from = "assumption";
       }
-      assumption = CUSTOMS_ASSUMPTION;
+      assumption = customsAssumption(customsHold);
     }
 
     if (carrierHeld && entry.key === restartKey) {
@@ -312,7 +305,6 @@ function estimate(input: EstimatorInput): EstelaEstimate {
     ...(assumption ? { assumption } : {}),
     firmsUpWhen: firmingEvent(first.code, first.place),
     basis: ESTIMATE_BASIS,
-    computedAt: now,
   };
   return result;
 }
@@ -321,7 +313,8 @@ function estimate(input: EstimatorInput): EstelaEstimate {
  * Stands in for a learned, per-lane model. It propagates the plan's own gaps from the last
  * confirmed milestone, lets operator estimates and vessel schedules override them, and restarts
  * the chain at the next departure when one was missed. A pure function of its input: the same
- * shipment at the same instant always gets the same answer.
+ * shipment at the same instant always gets the same answer. Whether a shipment is fit to be
+ * estimated at all is not its call: the application does not ask about one that owes an update.
  */
 export const ruleBasedEstimator: EtaEstimator = {
   estimate: (input) => Promise.resolve(estimate(input)),

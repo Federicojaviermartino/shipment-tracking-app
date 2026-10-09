@@ -87,7 +87,12 @@ type CustomerTimeline = {
  */
 export function customerTimeline(shipment: PortalShipmentView, clock?: NowClock): CustomerTimeline {
   const { milestones, holds } = shipment;
-  const reached = milestones.findLastIndex((milestone) => milestone.state === "done");
+  // A customs entry can be lodged ahead of the cargo: what is done after a milestone still to
+  // come is not where the cargo has got to.
+  const ahead = milestones.findIndex(({ state }) => state === "next" || state === "upcoming");
+  const reached = milestones
+    .slice(0, ahead === -1 ? milestones.length : ahead)
+    .findLastIndex((milestone) => milestone.state === "done");
   const zone = milestones[reached]?.place.zone ?? shipment.zone;
 
   const entries = milestones.map((milestone) => milestoneEntry(milestone, shipment.published));

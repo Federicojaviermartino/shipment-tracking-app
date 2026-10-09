@@ -2,7 +2,7 @@ import { assertNever } from "@/domain/assert-never";
 import { DOCUMENT_LABEL } from "@/domain/labels";
 import { internalEvents, operatorEvents, type InternalEvent, type LoggedEvent } from "@/domain/log";
 import { inScope, type InternalActor } from "@/domain/perimeter";
-import { canPerform, CAPABILITY_REASON, type StepKind } from "@/domain/playbook";
+import { canPerform, CAPABILITY_REASON, REVIEW_REQUIRES, type StepKind } from "@/domain/playbook";
 import type { ShipmentProjection } from "@/domain/projection";
 import { operatorsOf, type Shipment } from "@/domain/shipment";
 import { formatDay } from "@/domain/time";
@@ -55,8 +55,8 @@ export function createCommands(deps: {
     shipment: Shipment,
     events: readonly LoggedEvent[],
   ): CommandResult {
-    if (!canPerform(actor, "logistics")) {
-      return refuse("forbidden", roleReason(context, shipment, "logistics"));
+    if (!canPerform(actor, REVIEW_REQUIRES)) {
+      return refuse("forbidden", roleReason(context, shipment, REVIEW_REQUIRES));
     }
     const reading = operatorEvents(events).find(
       (event) => event.key === command.eventKey && event.reading.method === "ai",

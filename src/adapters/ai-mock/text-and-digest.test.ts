@@ -25,8 +25,21 @@ describe("the pattern text interpreter", () => {
         state: "raised",
         reason:
           "Customs found a gross-weight discrepancy between the commercial invoice (4,180 kg) and the bill of lading (4,810 kg); a corrected invoice is required.",
+        requires: "commercial_invoice",
       },
       rule: "pattern:customs hold",
+    });
+  });
+
+  test("a hold names a required document only when the text asks for one", async () => {
+    const inspection = await read(
+      "La mercancía queda retenida por la aduana para reconocimiento físico (semáforo rojo). Sin documentación pendiente por su parte.",
+    );
+    expect(inspection?.observation).toEqual({
+      type: "hold",
+      hold: "customs",
+      state: "raised",
+      reason: "Customs is holding the goods after an inspection.",
     });
   });
 

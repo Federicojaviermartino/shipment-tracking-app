@@ -149,6 +149,11 @@ describe("Eisvogel: what rides on a payload besides its status", () => {
     expect(swiss?.kind === "observation" && "place" in swiss.observation).toBe(false);
   });
 
+  test("an optional field sent as null is an absent field", () => {
+    const absent = { eta: null, lat: null, lon: null, bemerkung: null };
+    expect(items({ ...scan, ...absent })).toEqual(items(scan));
+  });
+
   test("reads the offset of each timestamp", () => {
     const [winter] = items({ ...scan, zeit: "2026-10-26T06:10:00+01:00" });
     expect(winter?.kind === "observation" && winter.occurredAt).toBe(Date.UTC(2026, 9, 26, 5, 10));

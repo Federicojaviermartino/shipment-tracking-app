@@ -1,14 +1,10 @@
 import { describe, expect, test } from "vitest";
 import type { Batch, EventStore } from "@/application/ports/event-store";
-import type { LoggedEvent, NoticeSent, RawMessage } from "@/domain/log";
+import type { Fact, LoggedEvent, NoticeSent, RawMessage } from "@/domain/log";
 import { HOUR, MINUTE } from "@/domain/time";
-import {
-  BrowserEventStore,
-  DEFAULT_SESSION_KEY,
-  MAX_SESSION_AGE,
-  SESSION_VERSION,
-} from "./browser-event-store";
+import { BrowserEventStore, DEFAULT_SESSION_KEY, MAX_SESSION_AGE } from "./browser-event-store";
 import { InMemoryEventStore } from "./in-memory-event-store";
+import { SESSION_VERSION } from "./stored-session";
 import { fakeBrowserStorage } from "./test-support";
 
 function notice(id: string, shipmentId = "EST-1"): NoticeSent {
@@ -239,6 +235,51 @@ describe("BrowserEventStore: persistence", () => {
     expect(expired.sessionStartedAt()).toBe(browser.time.now);
   });
 
+  test("expiry is a rule of loading: a tab that outlives six hours goes on in its own session", () => {
+    const browser = fakeBrowser();
+    const tab = browser.openTab();
+    tab.append({ events: [notice("n-1")] });
+    const started = tab.sessionStartedAt();
+
+    browser.time.now += MAX_SESSION_AGE + MINUTE;
+    tab.append({ events: [notice("n-2")] });
+    expect(tab.events().map((event) => event.kind !== "operator" && event.id)).toEqual([
+      false,
+      "n-1",
+      "n-2",
+    ]);
+    expect(tab.sessionStartedAt()).toBe(started);
+
+    // Hearing about its own key does not expire it either.
+    browser.announce(DEFAULT_SESSION_KEY);
+    expect(tab.events()).toHaveLength(3);
+    expect(tab.sessionStartedAt()).toBe(started);
+  });
+
+  test("a tab opened after the session expired starts a new one, and the old tab follows it whole", () => {
+    const browser = fakeBrowser();
+    const old = browser.openTab();
+    old.append({ events: [notice("n-1")] });
+    const changes = countChanges(old);
+
+    browser.time.now += MAX_SESSION_AGE + MINUTE;
+    const fresh = browser.openTab();
+    expect(fresh.events()).toHaveLength(1);
+    expect(old.events()).toHaveLength(1);
+    expect(old.sessionStartedAt()).toBe(fresh.sessionStartedAt());
+    expect(changes()).toBe(1);
+  });
+
+  test("a session dated in the future resets itself", () => {
+    const browser = fakeBrowser();
+    browser.openTab().append({ events: [notice("n-1")] });
+
+    browser.time.now -= MINUTE;
+    const store = browser.openTab();
+    expect(store.events()).toHaveLength(1);
+    expect(store.sessionStartedAt()).toBe(browser.time.now);
+  });
+
   test("a session written by another version of the log resets itself", () => {
     const browser = fakeBrowser();
     browser.values.set(
@@ -265,6 +306,122 @@ describe("BrowserEventStore: persistence", () => {
     expect(browser.openTab().events()).toHaveLength(1);
     browser.values.set(DEFAULT_SESSION_KEY, JSON.stringify({ version: SESSION_VERSION }));
     expect(browser.openTab().events()).toHaveLength(1);
+  });
+
+  test.each([
+    ["an operator event without its fact", { ...operatorEvent("old"), fact: undefined }],
+    ["a fact of a type the log does not have", { ...operatorEvent("old"), fact: { type: "eta" } }],
+    ["an internal event of an unknown type", { ...notice("n-1"), type: "notice_drafted" }],
+    ["something that is not an event", "n-1"],
+  ])("a stored session holding %s is not trusted: it resets itself", (_, event) => {
+    const browser = fakeBrowser();
+    browser.values.set(
+      DEFAULT_SESSION_KEY,
+      JSON.stringify({
+        version: SESSION_VERSION,
+        startedAt: browser.time.now,
+        raws: [],
+        events: [notice("n-0"), event],
+        unprocessed: [],
+      }),
+    );
+    const store = browser.openTab();
+    expect(store.events().map((logged) => logged.kind === "operator" && logged.key)).toEqual([
+      "seed",
+    ]);
+    expect(JSON.parse(browser.values.get(DEFAULT_SESSION_KEY) ?? "{}")).toMatchObject({
+      events: [],
+    });
+  });
+
+  test("every kind of logged event survives a reload unchanged", () => {
+    const browser = fakeBrowser();
+    const first = browser.openTab();
+    const internal = {
+      kind: "internal",
+      shipmentId: "EST-1",
+      at: 2_000,
+      by: "marta.soler",
+    } as const;
+    const place = { name: "Veracruz", country: "MX", zone: "America/Mexico_City" } as const;
+    const facts: Fact[] = [
+      { type: "milestone", code: "DISCHARGED", place: { ...place, locode: "MXVER" } },
+      { type: "estimate", code: "DELIVERED", place, at: 9_000, precision: "day", remark: "ETA" },
+      { type: "estimate_withdrawn", code: "DELIVERED", place },
+      {
+        type: "hold",
+        hold: "customs",
+        state: "raised",
+        reason: "Invoice value",
+        requires: "commercial_invoice",
+      },
+      { type: "position", place: "AP-7 km 512" },
+    ];
+    const events: LoggedEvent[] = [
+      ...facts.map((fact, index) => ({
+        ...operatorEvent(`fact-${index}`),
+        fact,
+        reading: { method: "ai", rule: "test" } as const,
+      })),
+      {
+        ...notice("n-1"),
+        published: { day: "2026-10-16", at: 9_000, precision: "day", basis: "estela_estimate" },
+      },
+      { ...internal, id: "r-1", type: "reading_reviewed", eventKey: "fact-3", accepted: false },
+      {
+        ...internal,
+        id: "c-1",
+        type: "operator_contacted",
+        exception: "stale",
+        operatorId: "CRZ",
+        subject: "Status?",
+        body: "Where is it?",
+      },
+      {
+        ...internal,
+        id: "d-1",
+        type: "document_sent",
+        exception: "customs_hold",
+        docType: "commercial_invoice",
+        fileName: "invoice.pdf",
+        to: "TGF",
+        subject: "Invoice",
+        body: "Attached.",
+      },
+      {
+        kind: "document",
+        id: "doc-1",
+        shipmentId: "EST-1",
+        at: 3_000,
+        source: "IBON",
+        rawId: "raw-a",
+        docType: "cmr",
+        fileName: "cmr.pdf",
+        customerVisible: true,
+      },
+    ];
+    const rejected = { rawId: "raw-x", reason: "orphan" as const, detail: "unknown reference" };
+    first.append({ raws: [raw("raw-a")], events, unprocessed: [rejected] });
+
+    const reloaded = browser.openTab();
+    expect(reloaded.events().slice(1)).toEqual(events);
+    expect(reloaded.raw("raw-a")).toEqual(raw("raw-a"));
+    expect(reloaded.unprocessed()).toEqual([rejected]);
+  });
+
+  test("an append that adds nothing still announces what it pulled from another tab", () => {
+    const browser = fakeBrowser();
+    const one = browser.openTab();
+    const two = browser.openTab();
+    const changes = countChanges(two);
+    // Both tabs append the same event before the storage notification of the first arrives.
+    browser.hold();
+    one.append({ events: [notice("n-1")] });
+    two.append({ events: [notice("n-1")] });
+    expect(two.events()).toHaveLength(2);
+    expect(changes()).toBe(1);
+    browser.deliver();
+    expect(changes()).toBe(1);
   });
 
   test("reset clears the stored session and starts a new one in every tab", () => {

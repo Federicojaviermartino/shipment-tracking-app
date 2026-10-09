@@ -5,7 +5,6 @@ import { detectExceptions, healthOf, type Health, type ShipmentException } from 
 import type { LoggedEvent } from "./log";
 import { primaryException } from "./queue";
 import type { Shipment } from "./shipment";
-import { expectedUpdateBy } from "./staleness";
 import { importGateOf, stageOf, type ImportGate, type Stage } from "./stage";
 import { buildTimeline } from "./fold";
 import type { Timeline } from "./timeline";
@@ -23,7 +22,6 @@ export type ShipmentProjection = {
   primary: ShipmentException | null;
   health: Health;
   customsHold: boolean;
-  expectedUpdateBy: Instant | null;
 };
 
 /**
@@ -53,6 +51,5 @@ export function projectShipment(input: {
     primary: primaryException(exceptions),
     health: healthOf(timeline, exceptions),
     customsHold: exceptions.some((exception) => exception.type === "customs_hold"),
-    expectedUpdateBy: expectedUpdateBy(timeline),
   };
 }

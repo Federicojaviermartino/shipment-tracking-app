@@ -33,7 +33,14 @@ export type Fact =
       remark?: string;
     }
   | { type: "estimate_withdrawn"; code: MilestoneCode; place: Place; remark?: string }
-  | { type: "hold"; hold: HoldKind; state: "raised" | "cleared"; reason: string }
+  | {
+      type: "hold";
+      hold: HoldKind;
+      state: "raised" | "cleared";
+      reason: string;
+      /** The document the hold is said to be waiting for. Absent means none was named. */
+      requires?: DocumentType;
+    }
   | { type: "position"; place: string }
   | { type: "note"; text: string };
 
@@ -146,6 +153,22 @@ export function internalEvents(events: readonly LoggedEvent[]): InternalEvent[] 
 
 export function documentEvents(events: readonly LoggedEvent[]): DocumentEvent[] {
   return once(events.filter((event): event is DocumentEvent => event.kind === "document"));
+}
+
+/**
+ * What a person last decided about each model reading, by the key of the event that was read.
+ * A reading can be reviewed again: the later review stands, and the id settles a tie.
+ */
+export function latestReviews(events: readonly LoggedEvent[]): Map<string, ReadingReviewed> {
+  const latest = new Map<string, ReadingReviewed>();
+  for (const event of internalEvents(events)) {
+    if (event.type !== "reading_reviewed") continue;
+    const kept = latest.get(event.eventKey);
+    const later =
+      !kept || event.at > kept.at || (event.at === kept.at && compareText(event.id, kept.id) > 0);
+    if (later) latest.set(event.eventKey, event);
+  }
+  return latest;
 }
 
 /** Customer notices, oldest first. */

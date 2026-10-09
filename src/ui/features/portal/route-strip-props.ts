@@ -1,4 +1,4 @@
-import type { RouteView } from "@/application/views";
+import type { CustomerRouteView } from "@/application/views";
 import type { RouteLeg, RoutePosition, RouteStop } from "@/ui/kit/route-strip";
 
 type RouteStripJourney = { stops: RouteStop[]; legs: RouteLeg[]; position: RoutePosition };
@@ -8,8 +8,8 @@ type RouteStripJourney = { stops: RouteStop[]; legs: RouteLeg[]; position: Route
  * verdict (a confirmed hold or a published delay), so the verdict's words name it. The marker is
  * never drawn as a last known position: a customer reads the age of the last update instead.
  */
-export function routeStripProps(route: RouteView, verdictLabel: string): RouteStripJourney {
-  const problem = (status: RouteView["stops"][number]["problem"]) =>
+export function routeStripProps(route: CustomerRouteView, verdictLabel: string): RouteStripJourney {
+  const problem = (status: CustomerRouteView["stops"][number]["problem"]) =>
     status ? { status, label: verdictLabel } : undefined;
 
   return {
@@ -21,7 +21,6 @@ export function routeStripProps(route: RouteView, verdictLabel: string): RouteSt
     })),
     legs: route.legs.map((leg) => ({
       mode: leg.mode,
-      operator: leg.operator,
       problem: problem(leg.problem),
     })),
     position: route.position,

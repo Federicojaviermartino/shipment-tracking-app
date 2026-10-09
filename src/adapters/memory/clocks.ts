@@ -1,15 +1,6 @@
 import type { Clock } from "@/application/ports/clock";
 import type { Instant } from "@/domain/time";
 
-/** A clock that never moves: every rule can be asserted at a chosen instant. */
-export class FixedClock implements Clock {
-  constructor(private readonly at: Instant) {}
-
-  now(): Instant {
-    return this.at;
-  }
-}
-
 /** A clock a test moves by hand. */
 export class ManualClock implements Clock {
   constructor(private at: Instant) {}

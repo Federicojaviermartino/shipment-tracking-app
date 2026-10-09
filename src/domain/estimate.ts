@@ -28,7 +28,6 @@ export type Estimate = {
   firmsUpWhen?: string;
   /** How it was computed, as shown to operations: "Rule-based estimate". */
   basis: string;
-  computedAt: Instant;
 };
 
 /** The estimator declining to answer is an answer: unknown is shown as unknown. */

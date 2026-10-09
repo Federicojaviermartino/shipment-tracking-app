@@ -37,13 +37,17 @@ function needsNotice(projection: ShipmentProjection | undefined): boolean {
  * when operator events came in, operations also get a notice built by comparing each touched
  * shipment with and without them at the same instant, so that nothing but the events themselves
  * can explain the difference.
+ *
+ * A listener is somebody else's code. One that throws has failed alone: the others are still
+ * told, and its error goes to `report`, because nobody is waiting on an announcement to catch it.
  */
 export function createLive(deps: {
   directory: Directory;
   store: EventStore;
   projector: Projector;
+  report: (error: unknown) => void;
 }): Live {
-  const { directory, store, projector } = deps;
+  const { directory, store, projector, report } = deps;
   const subscribers = new Set<{ actor: Actor; listener: (change: Change) => void }>();
   const watchers = new Set<() => void>();
   const shipments = new Map<ShipmentId, Shipment>(directory.shipments.map((s) => [s.id, s]));
@@ -107,6 +111,14 @@ export function createLive(deps: {
     };
   }
 
+  function tell(listener: () => void): void {
+    try {
+      listener();
+    } catch (error) {
+      report(error);
+    }
+  }
+
   async function announce(): Promise<void> {
     const events = store.events();
     const current = new Map(events.map((event) => [eventId(event), event.shipmentId]));
@@ -114,7 +126,7 @@ export function createLive(deps: {
     const gone = [...known].filter(([id]) => !current.has(id)).map(([, shipmentId]) => shipmentId);
     known = current;
 
-    for (const watcher of [...watchers]) watcher();
+    for (const watcher of [...watchers]) tell(watcher);
     const touched = [...new Set([...fresh.map((event) => event.shipmentId), ...gone])];
     if (touched.length === 0) return;
 
@@ -125,13 +137,14 @@ export function createLive(deps: {
         return shipment !== undefined && inScope(actor, shipment);
       });
       if (shipmentIds.length === 0) continue;
-      listener({ shipmentIds, notice: noticeFor(actor, comparison) });
+      const change = { shipmentIds, notice: noticeFor(actor, comparison) };
+      tell(() => listener(change));
     }
   }
 
   store.subscribe(() => {
     // One at a time and in order; a failed announcement must not silence the ones after it.
-    queue = queue.then(announce).catch(() => undefined);
+    queue = queue.then(announce).catch(report);
   });
 
   return {

@@ -54,7 +54,6 @@ export function opsRow(
   const site = siteOf(directory, shipment.originSiteId);
   const destination = shipment.consignee.place;
   const origin = site?.place ?? shipment.plan[0]?.place ?? destination;
-  const heard = [...timeline.signals].sort((a, b) => b.lastReceivedAt - a.lastReceivedAt)[0];
 
   return {
     id: shipment.id,
@@ -89,10 +88,12 @@ export function opsRow(
     case: primary ? caseView(context, actor, projection, primary, events) : null,
     otherCases: Math.max(0, projection.exceptions.length - 1),
     dates: datesView(context, projection),
-    lastUpdate:
-      timeline.lastFactReceivedAt !== null && heard
-        ? { at: timeline.lastFactReceivedAt, by: sourceName(directory, heard.source) }
-        : null,
+    lastUpdate: timeline.lastFact
+      ? {
+          at: timeline.lastFact.receivedAt,
+          by: sourceName(directory, timeline.lastFact.source),
+        }
+      : null,
   };
 }
 
@@ -193,7 +194,7 @@ export function opsShipment(
 
   return {
     ...opsRow(context, actor, projection, events),
-    incotermLine: incotermLine(shipment, "ops"),
+    incotermLine: incotermLine(customer.identifiers.incoterm, "ops"),
     cargo: {
       description: shipment.cargo.description,
       packages: shipment.cargo.packages,
@@ -205,7 +206,7 @@ export function opsShipment(
       caseView(context, actor, projection, exception, events),
     ),
     customerSees: customerSees(directory, customer),
-    timeline: timelineView(context, projection, events),
+    timeline: timelineView(context, actor, projection, events),
     documents: documentViews(context, projection),
     references: [
       {
@@ -261,7 +262,7 @@ export function opsOverview(
   const waiting = counts.waiting > 0 ? ` ${counts.waiting} waiting on others.` : "";
   const line = `${need}${waiting} ${counts.onPlan} on plan. ${counts.deliveredSinceYesterday} delivered since yesterday.`;
 
-  const received = inScope.flatMap((row) => row.timeline.lastFactReceivedAt ?? []);
+  const received = inScope.flatMap((row) => row.timeline.lastFact?.receivedAt ?? []);
   const unique = <Value>(values: Value[]) => [...new Set(values)];
   const shipments = inScope.map((row) => row.shipment);
 

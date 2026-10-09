@@ -1,3 +1,4 @@
+import { withoutAccents } from "./compare";
 import type { Instant, LocalDate, Precision, Zone } from "./time";
 
 export type ShipmentId = string;
@@ -129,11 +130,7 @@ export type Shipment = {
 
 /** Case- and accent-insensitive, so "MÁLAGA" in a carrier file is the plan's "Málaga". */
 export function placeKey(place: Pick<Place, "name">): string {
-  return place.name
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .trim()
-    .toUpperCase();
+  return withoutAccents(place.name).trim().toUpperCase();
 }
 
 export function milestoneKey(code: MilestoneCode, place: Pick<Place, "name">): string {
@@ -146,6 +143,23 @@ export function destinationZone(shipment: Shipment): Zone {
 
 export function originPlace(shipment: Shipment): Place | undefined {
   return shipment.plan[0]?.place;
+}
+
+/**
+ * The zone a deadline is read in: that of the milestone it protects. One that names no milestone
+ * is read where the shipment starts.
+ */
+export function deadlineZone(shipment: Shipment, deadline: Deadline): Zone {
+  const guarded = shipment.plan.find((milestone) => milestone.key === deadline.milestoneKey);
+  return (guarded?.place ?? originPlace(shipment) ?? shipment.consignee.place).zone;
+}
+
+/**
+ * DAP and CPT both leave import clearance to the buyer, wherever there is a border to clear: a
+ * shipment whose route has an import gate is one its consignee clears.
+ */
+export function consigneeClearsImport(shipment: Shipment): boolean {
+  return shipment.sections.some((section) => section.kind === "port" && section.gate === "import");
 }
 
 export function isInternational(shipment: Shipment): boolean {

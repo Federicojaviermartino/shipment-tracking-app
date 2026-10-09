@@ -1,3 +1,4 @@
+import { withoutAccents } from "./compare";
 import type { Health } from "./exceptions";
 import {
   operatorsOf,
@@ -43,18 +44,14 @@ export const DESK_ZONE: Zone = "Europe/Madrid";
 export function resolveDue(
   due: NonNullable<ShipmentFilter["due"]>,
   now: Instant,
-  zone: Zone = DESK_ZONE,
 ): { from: LocalDate; to: LocalDate } {
-  const today = localDate(now, zone);
+  const today = localDate(now, DESK_ZONE);
   if (due === "today") return { from: today, to: today };
   return weekOf(due === "this_week" ? today : addDays(today, 7));
 }
 
 function fold(text: string): string {
-  return text
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase();
+  return withoutAccents(text).toLowerCase();
 }
 
 function searchableText(shipment: Shipment): string {

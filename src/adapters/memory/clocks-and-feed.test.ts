@@ -2,15 +2,15 @@ import { describe, expect, test } from "vitest";
 import type { LogView } from "@/application/ports/demo-feed";
 import type { LoggedEvent, RawMessage } from "@/domain/log";
 import { HOUR, MINUTE } from "@/domain/time";
-import { DemoClock, FixedClock, ManualClock } from "./clocks";
+import { DemoClock, ManualClock } from "./clocks";
 import { ScriptedDemoFeed, type ScriptedEvent } from "./scripted-demo-feed";
 
 const T0 = Date.UTC(2026, 9, 7, 14, 0);
 
 describe("clocks", () => {
-  test("a fixed clock never moves and a manual one moves only when told", () => {
-    expect(new FixedClock(T0).now()).toBe(T0);
+  test("a manual clock moves only when told", () => {
     const clock = new ManualClock(T0);
+    expect(clock.now()).toBe(T0);
     clock.advance(5 * MINUTE);
     expect(clock.now()).toBe(T0 + 5 * MINUTE);
   });
@@ -71,11 +71,8 @@ const SCRIPT: ScriptedEvent[] = [
   },
 ];
 
-function logWith(rawIds: string[], events: LoggedEvent[] = []): LogView {
-  return {
-    events: () => events,
-    raw: (id) => (rawIds.includes(id) ? message(id, T0) : undefined),
-  };
+function logWith(messageIds: string[], events: LoggedEvent[] = []): LogView {
+  return { events: () => events, received: (id) => messageIds.includes(id) };
 }
 
 function invoiceSent(shipmentId: string): LoggedEvent {

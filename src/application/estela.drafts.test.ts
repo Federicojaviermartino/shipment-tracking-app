@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { ruleBasedEstimator } from "@/adapters/ai-mock/rule-based-estimator";
 import { startEstela } from "@/composition/test-support";
-import { MINUTE } from "@/domain/time";
+import { dayInstant, MINUTE } from "@/domain/time";
 import { ungroundedDates } from "./text/grounding";
 import type { Draft } from "./views";
 
@@ -167,6 +167,29 @@ describe("drafts", () => {
     expect(await ids("contact_operator")).not.toContain("published");
   });
 
+  test("of the steps an estimate assumes, only a customs release lends its day to the draft", async () => {
+    const [, , confirmed] = await worlds();
+    if (!confirmed) throw new Error("No world");
+    const { estela, marta } = confirmed.world;
+    const assumed = async (shipmentId: string) => {
+      const estimate = (await estela.ops.shipment(marta, shipmentId))?.dates.estela;
+      return estimate?.kind === "estimate"
+        ? estimate.steps.filter((step) => step.from === "assumption").map((s) => s.milestoneKey)
+        : [];
+    };
+    const datesOf = async (shipmentId: string) =>
+      (await estela.ops.draft(marta, shipmentId, "notify_customer"))?.facts.find(
+        (fact) => fact.id === "estelaDoor",
+      )?.dates;
+
+    // The release is assumed for Thu 8 Oct: a notice may say so next to the door date.
+    expect(await assumed("EST-4012")).toEqual(["IMPORT_RELEASED@VERACRUZ"]);
+    expect(await datesOf("EST-4012")).toEqual(["2026-10-09", "2026-10-08"]);
+    // An overdue hub scan moved to now is an assumption too, and not a date to tell anybody.
+    expect(await assumed("EST-4128")).toEqual(["HUB_IN@MURCIA"]);
+    expect(await datesOf("EST-4128")).toEqual(["2026-10-08"]);
+  });
+
   test("a document draft suggests the file to attach: a new revision when it corrects one", async () => {
     const all = await worlds();
     const [atT0, , confirmed] = all.map((item) => item.world);
@@ -219,13 +242,20 @@ describe("drafts", () => {
 });
 
 describe("fail closed", () => {
-  test("an estimator that fails means no estimate, never a broken screen or an invented date", async () => {
-    const { estela, marta, mariana } = await startEstela({
+  test("an estimator that fails is a withheld estimate that says so: no broken screen, no invented date, no green verdict", async () => {
+    const { estela, marta, mariana, camille } = await startEstela({
       ai: { estimator: { estimate: () => Promise.reject(new Error("model down")) } },
     });
     const rows = await estela.ops.shipments(marta, { view: "all" });
     expect(rows).toHaveLength(23);
-    expect(rows.every((row) => row.dates.estela === null)).toBe(true);
+    const open = rows.filter((row) => row.dates.delivered === null && row.health !== "stale");
+    expect(open).toHaveLength(16);
+    for (const row of open) {
+      expect(row.dates.estela, row.id).toEqual({
+        kind: "withheld",
+        line: "No estimate: the estimator is unavailable.",
+      });
+    }
     // Rules that need no model still fire: the hold, the declared delay, the cut-off, the silence.
     expect(rows.filter((row) => row.case?.state === "needs_action").map((row) => row.id)).toEqual([
       "EST-4128",
@@ -234,7 +264,49 @@ describe("fail closed", () => {
       "EST-4012",
       "EST-4127",
     ]);
-    expect((await estela.portal.home(mariana)).onTheWay.length).toBeGreaterThan(0);
+
+    // EST-4134 is at risk only by Estela's estimate. Without one nobody may call it on time.
+    const atRisk = await estela.portal.shipment(camille, "EST-4134");
+    expect(atRisk).toMatchObject({ verdict: "in_progress", verdictLabel: "On the way" });
+    for (const customer of [mariana, camille]) {
+      const home = await estela.portal.home(customer);
+      const cards = [...home.attention, ...home.onTheWay];
+      expect(cards.length).toBeGreaterThan(0);
+      expect(cards.filter((card) => card.verdict === "on_time")).toEqual([]);
+    }
+  });
+
+  test("a stale shipment is not put to the estimator: the application withholds, whatever adapter is plugged in", async () => {
+    // A stand-in for a learned model, which answers a day for everything it is asked.
+    const asked: string[] = [];
+    const { estela, marta } = await startEstela({
+      ai: {
+        estimator: {
+          estimate: (input) => {
+            asked.push(input.shipment.id);
+            return Promise.resolve({
+              withheld: false,
+              at: dayInstant("2026-10-08"),
+              precision: "day",
+              window: { earliest: dayInstant("2026-10-08"), latest: dayInstant("2026-10-08") },
+              steps: [],
+              basis: "Learned model",
+            });
+          },
+        },
+      },
+    });
+    const stale = await estela.ops.shipment(marta, "EST-4127");
+    expect(stale).toMatchObject({ health: "stale", case: { type: "stale" } });
+    expect(stale?.dates.estela).toEqual({
+      kind: "withheld",
+      line: "No estimate: no position from Eisvogel Spedition for 27 h.",
+    });
+    expect(asked).not.toContain("EST-4127");
+
+    // The same dates as with the stand-in that abstains by itself: the guard is not the adapter's.
+    const usual = await startEstela();
+    expect(stale?.dates).toEqual((await usual.estela.ops.shipment(usual.marta, "EST-4127"))?.dates);
   });
 
   test("without an estimate, the plan is shown as the plan for as long as it can still be met", async () => {
@@ -247,7 +319,7 @@ describe("fail closed", () => {
     expect(view?.dates.bestMissing).toBeNull();
   });
 
-  test("the estimator is asked once per open shipment and never about a delivered one", async () => {
+  test("the estimator is asked once per open shipment, and never about a delivered or a stale one", async () => {
     const asked: string[] = [];
     const { estela, marta } = await startEstela({
       ai: {
@@ -262,9 +334,10 @@ describe("fail closed", () => {
     await estela.ops.shipments(marta, { view: "all" });
     await estela.ops.overview(marta);
     await estela.ops.shipment(marta, "EST-4058");
-    expect(asked).toHaveLength(17);
-    expect(new Set(asked).size).toBe(17);
+    expect(asked).toHaveLength(16);
+    expect(new Set(asked).size).toBe(16);
     expect(asked).not.toContain("EST-4019");
+    expect(asked).not.toContain("EST-4127");
   });
 
   test("a digest writer that fails leaves the computed counts and no sentence", async () => {

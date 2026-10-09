@@ -56,7 +56,10 @@ export type Published =
         | { kind: "notice"; noticeId: string; approvedBy: UserId; issuedAt: Instant };
     }
   | { kind: "planned"; day: LocalDate; at: Instant; precision: Precision }
-  | { kind: "under_review"; was?: { day: LocalDate; reason: "superseded" | "withdrawn" } };
+  | {
+      kind: "under_review";
+      was?: { day: LocalDate; reason: "superseded" | "withdrawn" | "missed" };
+    };
 
 export type ShipmentDates = {
   /** The destination zone: every day below is a local day there. */
@@ -69,13 +72,19 @@ export type ShipmentDates = {
   agreesWithOperator: boolean;
   delivered: (Stamp<Confirmed> & { day: LocalDate }) | null;
   /**
-   * The best door date Estela can stand behind: the operator's unless superseded, else its own.
-   * A customer notice communicates exactly this, so it is already shaped as the notice snapshot.
+   * The best door date Estela can stand behind: the operator's unless it is superseded or its day
+   * is already over, else its own. A customer notice communicates exactly this, so it is already
+   * shaped as the notice snapshot.
    */
   best: PublishedSnapshot | null;
   /** The delivery date the customer currently sees. */
   published: Published;
 };
+
+/** A door day that has ended at the destination: with nothing delivered, it has been missed. */
+function isOver(day: LocalDate, now: Instant, zone: Zone): boolean {
+  return diffDays(day, localDate(now, zone)) > 0;
+}
 
 /** Every milestone is upstream of the door, and nothing was received after itself. */
 function latestUpstreamChange(timeline: Timeline, after: Instant): UpstreamChange | undefined {
@@ -130,17 +139,17 @@ function publish(input: PublishInput): Published {
     .filter((sent) => sent.shipmentId === shipment.id && sent.published !== null)
     .at(-1);
 
+  let told: Extract<Published, { kind: "estimated" }> | null = null;
   if (notice?.published && (!standing || notice.at >= standing.provenance.receivedAt)) {
-    return {
+    told = {
       kind: "estimated",
       day: notice.published.day,
       at: notice.published.at,
       precision: notice.published.precision,
       by: { kind: "notice", noticeId: notice.id, approvedBy: notice.by, issuedAt: notice.at },
     };
-  }
-  if (standing) {
-    return {
+  } else if (standing) {
+    told = {
       kind: "estimated",
       day: standing.day,
       at: standing.at,
@@ -152,13 +161,19 @@ function publish(input: PublishInput): Published {
       },
     };
   }
+  if (told) {
+    // Whoever gave it, a day that is over is no longer an estimate of anything.
+    return isOver(told.day, now, zone)
+      ? { kind: "under_review", was: { day: told.day, reason: "missed" } }
+      : told;
+  }
   if (operator) return { kind: "under_review", was: { day: operator.day, reason: "superseded" } };
   if (withdrawn) return { kind: "under_review", was: { day: withdrawn.day, reason: "withdrawn" } };
 
   // Nobody has declared a door date yet: the booking plan is all there is, and it is shown as
   // such for as long as it has not already been missed.
   const planned = deliveryOf(timeline)?.planned;
-  if (planned && diffDays(localDate(now, zone), localDate(planned.at, zone)) >= 0) {
+  if (planned && !isOver(localDate(planned.at, zone), now, zone)) {
     return {
       kind: "planned",
       day: localDate(planned.at, zone),
@@ -203,7 +218,7 @@ export function selectDates(
     : null;
 
   let best: PublishedSnapshot | null = null;
-  if (operator && !operator.superseded) {
+  if (operator && !operator.superseded && !isOver(operator.day, now, zone)) {
     best = {
       day: operator.day,
       at: operator.at,

@@ -1,92 +1,82 @@
+import { assertNever } from "@/domain/assert-never";
+import type { CustomerView } from "@/domain/customer-view";
+import type { Site } from "@/domain/directory";
 import type { ExceptionHealth } from "@/domain/exceptions";
 import { HEALTH_LABEL } from "@/domain/labels";
 import type { ShipmentProjection } from "@/domain/projection";
-import { placeKey, type Section } from "@/domain/shipment";
-import { physicalProgress } from "@/domain/timeline";
+import { routeOf, type RoutePosition, type RouteStop } from "@/domain/route";
 import { siteOf, sourceName, type Directory } from "../directory";
 import { list } from "../text/format";
-import type { RouteView } from "../views";
-
-type Leg = Exclude<Section, { kind: "port" }>;
+import type { CustomerRouteView, RouteView } from "../views";
 
 /** Where a problem is drawn: where the cargo is, or on the sailing a cut-off puts at risk. */
 export type RouteProblem = { health: ExceptionHealth; on: "position" | "sailing" };
 
-/**
- * The journey as stops and legs, with the cargo placed on it. A port is a stop; a road or sea
- * section is a leg. The position follows the furthest confirmed physical milestone: a vessel
- * that has arrived is at the port, a box that has gated out is on the next leg.
- */
-export function routeView(
-  directory: Directory,
-  projection: ShipmentProjection,
-  options: { problem: RouteProblem | null; stale: boolean },
-): RouteView {
-  const { shipment, timeline } = projection;
-  const legs = shipment.sections.filter((section): section is Leg => section.kind !== "port");
-  const first = legs[0];
-  const places = first ? [first.from, ...legs.map((leg) => leg.to)] : [];
-  const site = siteOf(directory, shipment.originSiteId);
+/** The route with nobody's name on it: all that drawing it takes, and all a customer's view has. */
+type Journey = {
+  stops: readonly { place: { name: string }; role: RouteStop["role"]; gate: RouteStop["gate"] }[];
+  legs: readonly { mode: "road" | "sea" }[];
+  position: RoutePosition | null;
+};
 
-  const stops: RouteView["stops"] = places.map((place, index) => {
-    const port = shipment.sections.find(
-      (section) => section.kind === "port" && placeKey(section.place) === placeKey(place),
-    );
-    const gate = port?.kind === "port" ? port.gate : undefined;
-    let caption = "Hub";
-    if (index === 0) caption = site?.role === "warehouse" ? "Warehouse" : "Plant";
-    else if (index === places.length - 1) caption = "Consignee";
-    else if (port) caption = gate ? `Port · ${gate} customs` : "Port";
-    return { name: place.name, caption, gate: gate !== undefined, problem: null };
-  });
-  const routeLegs: RouteView["legs"] = legs.map((leg) => ({
-    mode: leg.kind,
-    operator: sourceName(directory, leg.operatorId),
+function caption(stop: Journey["stops"][number], origin: Site | undefined): string {
+  switch (stop.role) {
+    case "origin":
+      return origin?.role === "warehouse" ? "Warehouse" : "Plant";
+    case "consignee":
+      return "Consignee";
+    case "port":
+      return stop.gate ? `Port · ${stop.gate} customs` : "Port";
+    case "hub":
+      return "Hub";
+    default:
+      return assertNever(stop.role);
+  }
+}
+
+/** Stops, legs, the problem where it is and the whole in words. */
+function draw(
+  journey: Journey,
+  origin: Site | undefined,
+  problem: RouteProblem | null,
+): CustomerRouteView {
+  const { position } = journey;
+  const stops: CustomerRouteView["stops"] = journey.stops.map((stop) => ({
+    name: stop.place.name,
+    caption: caption(stop, origin),
+    gate: stop.gate !== null,
+    problem: null,
+  }));
+  const legs: CustomerRouteView["legs"] = journey.legs.map((leg) => ({
+    mode: leg.mode,
     problem: null,
   }));
 
-  let position: RouteView["position"] = { on: "stop", index: 0 };
-  const { last } = physicalProgress(timeline);
-  const section = last
-    ? timeline.sections.find(({ entries }) => entries.includes(last))?.section
-    : undefined;
-  if (projection.stage === "delivered") position = null;
-  else if (last && section?.kind === "port") {
-    const stop = places.findIndex((place) => placeKey(place) === placeKey(section.place));
-    position =
-      last.code === "GATE_OUT" && stop < legs.length
-        ? { on: "leg", index: stop }
-        : { on: "stop", index: Math.max(stop, 0) };
-  } else if (last && section) {
-    const leg = legs.findIndex((candidate) => candidate.id === section.id);
-    position =
-      last.code === "VESSEL_ARRIVED" ? { on: "stop", index: leg + 1 } : { on: "leg", index: leg };
-  }
-
-  const { problem } = options;
   if (problem && position) {
-    const sailing = routeLegs.find((leg) => leg.mode === "sea");
+    const sailing = legs.find((leg) => leg.mode === "sea");
     const target =
       problem.on === "sailing" && sailing
         ? sailing
         : position.on === "stop"
           ? stops[position.index]
-          : routeLegs[position.index];
+          : legs[position.index];
     if (target) target.problem = problem.health;
   }
 
-  const origin = places[0]?.name ?? "";
-  const destination = places.at(-1)?.name ?? "";
-  const modes = list(legs.map((leg) => leg.kind));
+  const first = stops[0]?.name ?? "";
+  const destination = stops.at(-1)?.name ?? "";
+  const modes = list(legs.map((leg) => leg.mode));
   let where = "Delivered";
   if (position?.on === "leg") {
     const leg = legs[position.index];
+    const from = stops[position.index]?.name;
+    const to = stops[position.index + 1]?.name;
     where = leg
-      ? `${leg.kind === "sea" ? "At sea" : "On the road"} between ${leg.from.name} and ${leg.to.name}`
+      ? `${leg.mode === "sea" ? "At sea" : "On the road"} between ${from} and ${to}`
       : "Under way";
   } else if (position) {
     const stop = stops[position.index];
-    if (position.index === 0) where = `At ${origin}, not yet picked up`;
+    if (position.index === 0) where = `At ${first}, not yet picked up`;
     else
       where = stop?.caption.startsWith("Port") ? `At the port of ${stop.name}` : `At ${stop?.name}`;
   }
@@ -94,9 +84,41 @@ export function routeView(
 
   return {
     stops,
-    legs: routeLegs,
+    legs,
     position,
-    stale: options.stale,
-    label: `${origin} to ${destination} by ${modes}. ${where}${trouble}.`,
+    label: `${first} to ${destination} by ${modes}. ${where}${trouble}.`,
   };
+}
+
+/** The route as operations see it: who carries each leg, and whether the position is overdue. */
+export function routeView(
+  directory: Directory,
+  projection: ShipmentProjection,
+  options: { problem: RouteProblem | null; stale: boolean },
+): RouteView {
+  const { shipment, timeline } = projection;
+  const route = routeOf(shipment, timeline);
+  const drawn = draw(
+    { ...route, legs: route.legs.map((leg) => ({ mode: leg.kind })) },
+    siteOf(directory, shipment.originSiteId),
+    options.problem,
+  );
+  return {
+    ...drawn,
+    legs: route.legs.map((leg, index) => ({
+      mode: leg.kind,
+      operator: sourceName(directory, leg.operatorId),
+      problem: drawn.legs[index]?.problem ?? null,
+    })),
+    stale: options.stale,
+  };
+}
+
+/** The route as a customer sees it, drawn from the customer's own view and from nothing else. */
+export function customerRouteView(
+  directory: Directory,
+  view: CustomerView,
+  problem: RouteProblem | null,
+): CustomerRouteView {
+  return draw(view.route, siteOf(directory, view.originSiteId), problem);
 }

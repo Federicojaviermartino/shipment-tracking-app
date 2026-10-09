@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 import type { LoggedEvent } from "./log";
 import type { Shipment } from "./shipment";
-import { expectedUpdateBy, nextExpectation } from "./staleness";
+import { nextExpectation } from "./staleness";
 import {
   at,
   confirmed,
@@ -18,7 +18,7 @@ import { buildTimeline } from "./fold";
 import { HOUR, MINUTE } from "./time";
 
 const deadline = (shipment: Shipment, events: LoggedEvent[]) =>
-  expectedUpdateBy(buildTimeline(shipment, events));
+  nextExpectation(buildTimeline(shipment, events))?.by ?? null;
 
 const isStale = (shipment: Shipment, events: LoggedEvent[], now: number) => {
   const by = deadline(shipment, events);

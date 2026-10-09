@@ -225,7 +225,12 @@ describe("cut-off risk", () => {
         health: "at_risk",
         basis: "rule",
         since: cutoff - 48 * HOUR,
-        actBy: { at: cutoff, label: "Export clearance cut-off for NORAY ALTAIR 612W" },
+        // The clock carries the booking's own deadline, so nothing has to look it up again.
+        actBy: {
+          at: cutoff,
+          label: "Export clearance cut-off for NORAY ALTAIR 612W",
+          deadline: ocean.deadlines[0],
+        },
       }),
     ]);
     expect(exceptions[0]?.evidence[0]?.text).toBe("Commercial invoice not on file");
@@ -251,9 +256,29 @@ describe("cut-off risk", () => {
     );
   });
 
-  test("stops firing when the cut-off has passed", () => {
-    expect(detect(ocean, inTerminal, null, cutoff + MINUTE).types).not.toContain("cutoff_risk");
+  test("keeps firing once the cut-off has passed: missing the vessel does not close the case", () => {
+    const { exceptions, health } = detect(ocean, inTerminal, null, cutoff + MINUTE);
+    expect(exceptions).toEqual([
+      expect.objectContaining({
+        type: "cutoff_risk",
+        state: "needs_action",
+        actBy: expect.objectContaining({ at: cutoff, deadline: ocean.deadlines[0] }),
+      }),
+    ]);
+    expect(health).toBe("at_risk");
   });
+
+  test.each(["EXPORT_RELEASED", "LOADED", "VESSEL_DEPARTED"] as const)(
+    "after the cut-off it stops once %s is confirmed, whatever was left unreported before it",
+    (code) => {
+      const planned = ocean.plan.find((milestone) => milestone.code === code);
+      if (!planned) throw new Error(`No ${code} in the plan`);
+      const reported = confirmed(ocean, code, planned.plannedAt, { precision: planned.precision });
+      const afterSailing = at("2026-09-26 09:00");
+      expect(detect(ocean, inTerminal, null, afterSailing).types).toEqual(["cutoff_risk"]);
+      expect(detect(ocean, [...inTerminal, reported], null, afterSailing).types).toEqual([]);
+    },
+  );
 
   test("keeps firing after the document is sent, but then it is waiting on the forwarder", () => {
     const sent = documentSent(ocean, "commercial_invoice", "TGF", cutoff - 19 * HOUR);
@@ -286,6 +311,12 @@ describe("stale", () => {
 
   test("does not fire while the update is not due yet", () => {
     expect(detect(truck, events, null, at("2026-10-07 02:59")).types).toEqual([]);
+  });
+
+  test("the instant the update is due is still in time: stale starts after it", () => {
+    const due = at("2026-10-07 03:00");
+    expect(detect(truck, events, null, due).types).toEqual([]);
+    expect(detect(truck, events, null, due + 1).types).toEqual(["stale"]);
   });
 });
 
@@ -393,6 +424,7 @@ describe("clocks: every exception takes its deadline from data", () => {
     expect(detect(ocean, customs, null, at("2026-10-13 09:00")).exceptions[0]?.actBy).toEqual({
       at: at("2026-10-16 23:59", MEXICO),
       label: "Free time ends: demurrage starts",
+      deadline: ocean.deadlines[1],
     });
   });
 });

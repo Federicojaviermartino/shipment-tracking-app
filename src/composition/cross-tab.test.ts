@@ -1,11 +1,11 @@
 import { describe, expect, test, vi } from "vitest";
 import { BrowserEventStore } from "@/adapters/memory/browser-event-store";
-import { ManualClock } from "@/adapters/memory/clocks";
+import { DemoClock, ManualClock } from "@/adapters/memory/clocks";
 import { fakeBrowserStorage } from "@/adapters/memory/test-support";
 import type { Estela } from "@/application/estela";
 import type { Change } from "@/application/views";
 import type { ExternalActor, InternalActor } from "@/domain/perimeter";
-import { MINUTE } from "@/domain/time";
+import { HOUR, MINUTE } from "@/domain/time";
 import { T0 } from "@/fixtures";
 import { createEstela } from "./create-estela";
 
@@ -153,5 +153,31 @@ describe("two tabs over one log", () => {
     expect(heard[1]).toEqual({ shipmentIds: ["EST-4058", "EST-4063"], notice: null });
     expect((await two.estela.ops.shipment(marta, "EST-4058"))?.health).toBe("on_time");
     expect(two.estela.demo.events()[0]).toMatchObject({ id: "A", state: "ready" });
+  });
+
+  test("a decision taken in a tab left open past six hours lands in the session it was taken in", async () => {
+    const storage = fakeBrowserStorage();
+    const store = new BrowserEventStore(storage.tab());
+    const clock = new DemoClock(
+      T0,
+      () => store.sessionStartedAt(),
+      () => storage.time.now,
+    );
+    const estela = await createEstela({ clock, store, aiLatencyMs: 0 });
+    const { marta, mariana } = personas(estela);
+
+    storage.time.now += 5 * MINUTE;
+    await estela.demo.send("A");
+    expect((await estela.ops.shipment(marta, "EST-4058"))?.health).toBe("at_risk");
+
+    storage.time.now += 6 * HOUR + MINUTE;
+    expect(await approveNotice(estela, marta, "EST-4058")).toMatchObject({ ok: true });
+
+    expect(estela.demo.events()[0]).toMatchObject({ id: "A", state: "sent" });
+    expect(estela.now()).toBe(T0 + 6 * HOUR + 6 * MINUTE);
+    const ops = await estela.ops.shipment(marta, "EST-4058");
+    expect(ops?.messages.map((message) => message.at)).toEqual([estela.now()]);
+    expect(ops?.health).not.toBe("on_time");
+    expect((await estela.portal.shipment(mariana, "EST-4058"))?.verdict).toBe("delayed");
   });
 });

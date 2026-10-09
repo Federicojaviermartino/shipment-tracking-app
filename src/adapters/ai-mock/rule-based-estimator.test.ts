@@ -1,12 +1,11 @@
 import { describe, expect, test } from "vitest";
 import type { EtaEstimator } from "@/application/ports/eta-estimator";
 import { startEstela } from "@/composition/test-support";
-import type { Operator } from "@/domain/directory";
 import { estimateBasis, type Estimate } from "@/domain/estimate";
 import { buildTimeline } from "@/domain/fold";
 import type { LoggedEvent } from "@/domain/log";
-import type { Shipment } from "@/domain/shipment";
-import { expectedUpdateBy } from "@/domain/staleness";
+import type { DocumentType, Shipment } from "@/domain/shipment";
+import { nextExpectation } from "@/domain/staleness";
 import {
   at,
   confirmed,
@@ -16,25 +15,19 @@ import {
   MEXICO,
   oceanShipment,
   PERPIGNAN,
-  position,
   roadShipment,
   VALENCIA,
 } from "@/domain/test-support";
 import { DAY, formatStamp, HOUR, localDate, MINUTE, type Instant } from "@/domain/time";
 import { isDelivered } from "@/domain/timeline";
-import { OPERATORS, SHIPMENTS, T0 } from "@/fixtures";
+import { SHIPMENTS, T0 } from "@/fixtures";
 import { ruleBasedEstimator } from "./rule-based-estimator";
-
-const OPERATORS_OF_THE_TESTS: Operator[] = [
-  { id: "EVS", name: "Eisvogel Spedition", kind: "road_carrier" },
-];
 
 async function estimate(shipment: Shipment, events: LoggedEvent[], now: Instant) {
   return ruleBasedEstimator.estimate({
     shipment,
     timeline: buildTimeline(shipment, events),
     now,
-    operators: OPERATORS_OF_THE_TESTS,
   });
 }
 
@@ -170,6 +163,24 @@ describe("vessel schedule", () => {
     ]);
     expect(result.firmsUpWhen).toBe("the vessel berths");
   });
+
+  test("an import entry lodged while the vessel is at sea does not anchor the chain: the door still follows the vessel", async () => {
+    const { shipment, events } = atSea();
+    const now = at("2026-10-07 16:05");
+    const prelodged = confirmed(shipment, "IMPORT_LODGED", day("2026-10-07"), { precision: "day" });
+    const delay = estimated(shipment, "VESSEL_ARRIVED", at("2026-10-11 08:00", MEXICO), {
+      receivedAt: now,
+    });
+    const result = await estimateOf(shipment, [...events, prelodged, delay], now);
+    expect(chain(shipment, result)).toEqual([
+      "VESSEL_ARRIVED@VERACRUZ Sun 11 Oct 08:00 operator_estimate",
+      "DISCHARGED@VERACRUZ Mon 12 Oct 12:00 lane_plan",
+      "IMPORT_RELEASED@VERACRUZ Thu 15 Oct lane_plan",
+      "GATE_OUT@VERACRUZ Thu 15 Oct 15:00 lane_plan",
+      "DELIVERED@QUERETARO Fri 16 Oct lane_plan",
+    ]);
+    expect(result.firmsUpWhen).toBe("the vessel berths");
+  });
 });
 
 describe("working days", () => {
@@ -243,14 +254,14 @@ describe("missed departure", () => {
 
 describe("open holds", () => {
   /** Discharged at Veracruz, import entry lodged Mon 5 Oct, then held by customs. */
-  function heldAtCustoms() {
+  function heldAtCustoms(requires: DocumentType | null = "commercial_invoice") {
     const shipment = oceanShipment({ committedDate: "2026-10-09" });
     const events = [
       confirmed(shipment, "VESSEL_DEPARTED", at("2026-09-18 20:55")),
       confirmed(shipment, "VESSEL_ARRIVED", at("2026-10-02 05:40", MEXICO)),
       confirmed(shipment, "DISCHARGED", at("2026-10-03 09:15", MEXICO)),
       confirmed(shipment, "IMPORT_LODGED", day("2026-10-05"), { precision: "day" }),
-      hold(shipment, "customs", "raised", at("2026-10-06 17:55")),
+      hold(shipment, "customs", "raised", at("2026-10-06 17:55"), requires ? { requires } : {}),
     ];
     return { shipment, events };
   }
@@ -265,6 +276,29 @@ describe("open holds", () => {
     ]);
     expect(result.assumption).toBe("if the corrected invoice reaches the broker today");
     expect(localDate(result.window.latest, MEXICO)).toBe("2026-10-12");
+  });
+
+  test("customs: a sailing that was never reported does not turn an import hold into an export one", async () => {
+    const { shipment, events } = heldAtCustoms();
+    const withoutDeparture = events.filter(
+      (event) => !(event.fact.type === "milestone" && event.fact.code === "VESSEL_DEPARTED"),
+    );
+    const now = at("2026-10-07 16:00");
+    const result = await estimateOf(shipment, withoutDeparture, now);
+    expect(chain(shipment, result)).toEqual(
+      chain(shipment, await estimateOf(shipment, events, now)),
+    );
+    expect(chain(shipment, result)[0]).toBe("IMPORT_RELEASED@VERACRUZ Thu 8 Oct assumption");
+    expect(result.assumption).toBe("if the corrected invoice reaches the broker today");
+  });
+
+  test("customs: when the hold asks for no document, the assumption does not invent an invoice", async () => {
+    const { shipment, events } = heldAtCustoms(null);
+    const result = await estimateOf(shipment, events, at("2026-10-07 16:00"));
+    expect(chain(shipment, result)[0]).toBe("IMPORT_RELEASED@VERACRUZ Thu 8 Oct assumption");
+    expect(result.assumption).toBe(
+      "if customs releases the goods on the next working day; what it needs is not known yet",
+    );
   });
 
   test("customs: on a Friday the next working day is Monday", async () => {
@@ -291,36 +325,6 @@ describe("open holds", () => {
     ];
     const result = await estimateOf(shipment, events, at("2026-10-05 17:00"));
     expect(result.assumption).toBe("if the carrier releases the goods today");
-  });
-});
-
-describe("withholding", () => {
-  test("a truck with telematics that has gone silent gets no estimate, and the reason names who is silent", async () => {
-    const shipment = roadShipment({ telematics: true });
-    const events = [
-      confirmed(shipment, "PICKED_UP", at("2026-10-05 15:05")),
-      position(shipment, "La Jonquera, ES", at("2026-10-06 13:00")),
-    ];
-    const silent = await estimate(shipment, events, at("2026-10-07 16:00"));
-    expect(silent).toEqual({
-      withheld: true,
-      reason: "no position from Eisvogel Spedition for 27 h",
-    });
-    const fresh = await estimate(shipment, events, at("2026-10-06 20:00"));
-    expect(fresh.withheld).toBe(false);
-  });
-
-  test("a delivery that is overdue past its grace gets no estimate either", async () => {
-    const shipment = roadShipment();
-    const events = [
-      confirmed(shipment, "PICKED_UP", at("2026-10-05 15:05")),
-      confirmed(shipment, "OUT_FOR_DELIVERY", at("2026-10-08 07:00")),
-    ];
-    const result = await estimate(shipment, events, at("2026-10-09 10:30"));
-    expect(result).toEqual({
-      withheld: true,
-      reason: "the delivery at Saint-Priest, expected Thu 8 Oct 10:00, has not been reported",
-    });
   });
 });
 
@@ -359,23 +363,18 @@ describe("invariants over the demo world", () => {
     return result;
   }
 
-  test("earliest <= at <= latest in local days, steps in order, nothing in the past, withheld when stale", async () => {
+  test("earliest <= at <= latest in local days, steps in order, nothing in the past", async () => {
     let estimates = 0;
-    let withheld = 0;
     for (const { name, events, now } of await snapshots()) {
       for (const shipment of SHIPMENTS) {
         const timeline = buildTimeline(shipment, events);
-        if (isDelivered(timeline)) continue;
-        const result = await estimator.estimate({ shipment, timeline, now, operators: OPERATORS });
+        // As the application asks: never about a delivered shipment, nor one that owes an update.
+        const expectation = nextExpectation(timeline);
+        if (isDelivered(timeline) || (expectation && now > expectation.by)) continue;
+        const result = await estimator.estimate({ shipment, timeline, now });
         const label = `${shipment.id} ${name}`;
-        const staleAfter = expectedUpdateBy(timeline);
-        const stale = staleAfter !== null && now > staleAfter;
-        expect(result.withheld, label).toBe(stale);
-        if (result.withheld) {
-          expect(result.reason.length, label).toBeGreaterThan(10);
-          withheld += 1;
-          continue;
-        }
+        expect(result.withheld, label).toBe(false);
+        if (result.withheld) continue;
         estimates += 1;
 
         const zone = shipment.consignee.place.zone;
@@ -384,7 +383,6 @@ describe("invariants over the demo world", () => {
         expect(door <= localDate(result.window.latest, zone), label).toBe(true);
         expect(door >= localDate(now, zone), label).toBe(true);
         expect(result.steps.at(-1)?.milestoneKey, label).toBe(shipment.plan.at(-1)?.key);
-        expect(result.computedAt, label).toBe(now);
 
         let previous: { at: Instant; day: string; minute: boolean } | null = null;
         for (const step of result.steps) {
@@ -410,6 +408,5 @@ describe("invariants over the demo world", () => {
       }
     }
     expect(estimates).toBeGreaterThan(100);
-    expect(withheld).toBeGreaterThan(3);
   });
 });

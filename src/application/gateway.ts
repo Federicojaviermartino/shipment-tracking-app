@@ -1,10 +1,12 @@
 import { applyFilter } from "@/domain/filters";
+import { plural } from "@/domain/labels";
 import type { LoggedEvent } from "@/domain/log";
 import { inScope, type Actor, type InternalActor } from "@/domain/perimeter";
 import type { ShipmentProjection } from "@/domain/projection";
 import { compareQueueRows } from "@/domain/queue";
 import { compareText } from "@/domain/compare";
-import { answerQuestion, vocabularyOf } from "./ask";
+import { deadlineZone } from "@/domain/shipment";
+import { answerQuestion, notUnderstood, vocabularyOf } from "./ask";
 import { createCommands } from "./commands";
 import type { ReadContext } from "./context";
 import type { Directory } from "./directory";
@@ -13,7 +15,7 @@ import type { Estela, QueueView } from "./estela";
 import type { Ingestion } from "./ingestion";
 import { createLive } from "./live";
 import type { Clock } from "./ports/clock";
-import type { DemoFeed } from "./ports/demo-feed";
+import type { DemoFeed, LogView } from "./ports/demo-feed";
 import type { DigestCase, DigestWriter } from "./ports/digest-writer";
 import type { EtaEstimator } from "./ports/eta-estimator";
 import type { EventStore } from "./ports/event-store";
@@ -21,13 +23,12 @@ import type { MessageDrafter } from "./ports/message-drafter";
 import type { QueryInterpreter } from "./ports/query-interpreter";
 import { SUGGESTED_QUERIES } from "./ports/query-interpreter.cases";
 import { createProjector, type World } from "./projections";
-import { deadlineBehind, permissionFor } from "./text/case-text";
+import { permissionFor } from "./text/case-text";
 import { describeFilter } from "./text/filter-text";
-import { plural } from "./text/format";
 import { perimeterWords } from "./text/perimeter-text";
-import type { DigestHighlight } from "./views";
+import type { DigestHighlight, OpsOverview } from "./views";
 import { opsOverview, opsRow, opsShipment } from "./view/ops";
-import { customerItem, portalHome, portalShipment } from "./view/portal";
+import { customerView, portalHome, portalShipment } from "./view/portal";
 
 export type GatewayDeps = {
   directory: Directory;
@@ -39,6 +40,8 @@ export type GatewayDeps = {
   digestWriter: DigestWriter;
   drafter: MessageDrafter;
   queryInterpreter: QueryInterpreter;
+  /** Where an error goes that no caller is waiting to catch: a screen's listener that threw. */
+  reportError: (error: unknown) => void;
 };
 
 /** A model call that fails, by rejecting or by throwing, is a model call that answered nothing. */
@@ -49,6 +52,34 @@ async function attempt<Result>(call: () => Promise<Result>): Promise<Result | nu
     return null;
   }
 }
+
+/**
+ * The operations side is for Ibón staff. The signatures say so to the compiler; at run time a
+ * persona that a caller narrowed wrongly is still an actor like any other, so every operations
+ * query asks again and answers anybody else as it answers "out of perimeter": with nothing.
+ */
+function staffOnly(actor: Actor): InternalActor | null {
+  return actor.kind === "internal" ? actor : null;
+}
+
+const NO_DESK: OpsOverview = {
+  identity: "",
+  counts: {
+    attention: 0,
+    waiting: 0,
+    all: 0,
+    delayed: 0,
+    held: 0,
+    atRisk: 0,
+    stale: 0,
+    onPlan: 0,
+    deliveredSinceYesterday: 0,
+  },
+  line: "",
+  lastOperatorUpdateAt: null,
+  filterOptions: { countries: [], sites: [], accounts: [], operators: [], vessels: [] },
+  suggestions: [],
+};
 
 /** How many cases the generated sentence of the briefing speaks about. */
 const HIGHLIGHT_CASES = 2;
@@ -92,9 +123,13 @@ function inView(row: ShipmentProjection, view: QueueView): boolean {
 export function createGateway(deps: GatewayDeps): Estela {
   const { directory, store, clock, ingestion, demoFeed } = deps;
   const projector = createProjector({ directory, store, clock, estimator: deps.estimator });
-  const live = createLive({ directory, store, projector });
+  const live = createLive({ directory, store, projector, report: deps.reportError });
   const execute = createCommands({ directory, store, clock, projector });
   const sending = new Set<string>();
+  const log: LogView = {
+    events: () => store.events(),
+    received: (messageId) => ingestion.received(messageId),
+  };
 
   const contextAt = (world: World): ReadContext => ({
     directory,
@@ -111,14 +146,16 @@ export function createGateway(deps: GatewayDeps): Estela {
     return row && inScope(actor, row.shipment) ? row : null;
   };
 
-  async function highlight(actor: InternalActor): Promise<DigestHighlight | null> {
+  async function highlight(asker: Actor): Promise<DigestHighlight | null> {
+    const actor = staffOnly(asker);
+    if (!actor) return null;
     const world = await projector.current();
     // Where acting today changes the outcome: nothing has gone wrong yet, and a deadline is near.
     const cases = scoped(actor, world)
       .flatMap((row): DigestCase[] => {
         const open = row.primary;
         if (!open || open.state !== "needs_action" || open.health !== "at_risk") return [];
-        const deadline = deadlineBehind(row.shipment, open);
+        const deadline = open.actBy?.deadline;
         if (!deadline || deadline.at <= world.now) return [];
         const milestone = row.shipment.plan.find((m) => m.key === deadline.milestoneKey);
         return [
@@ -128,7 +165,7 @@ export function createGateway(deps: GatewayDeps): Estela {
             deadline: {
               kind: deadline.kind,
               at: deadline.at,
-              zone: milestone?.place.zone ?? row.dates.zone,
+              zone: deadlineZone(row.shipment, deadline),
               milestone: milestone ? { code: milestone.code, place: milestone.place.name } : null,
             },
             documents: open.steps.flatMap((step) =>
@@ -162,24 +199,32 @@ export function createGateway(deps: GatewayDeps): Estela {
     actors: () => [...directory.actors],
 
     ops: {
-      async overview(actor) {
+      async overview(asker: Actor) {
+        const actor = staffOnly(asker);
+        if (!actor) return NO_DESK;
         const world = await projector.current();
         return opsOverview(contextAt(world), actor, scoped(actor, world), SUGGESTED_QUERIES);
       },
       highlight,
-      async shipments(actor, query) {
+      async shipments(asker: Actor, query) {
+        const actor = staffOnly(asker);
+        if (!actor) return [];
         const world = await projector.current();
         const context = contextAt(world);
         const listed = scoped(actor, world).filter((row) => inView(row, query.view));
         const rows = query.filter ? applyFilter(listed, query.filter, world.now) : listed;
         return rows.map((row) => opsRow(context, actor, row, eventsOf(world, row)));
       },
-      async shipment(actor, id) {
+      async shipment(asker: Actor, id) {
+        const actor = staffOnly(asker);
+        if (!actor) return null;
         const world = await projector.current();
         const row = find(actor, world, id);
         return row ? opsShipment(contextAt(world), actor, row, eventsOf(world, row)) : null;
       },
-      async ask(actor, text) {
+      async ask(asker: Actor, text) {
+        const actor = staffOnly(asker);
+        if (!actor) return notUnderstood(text, []);
         const world = await projector.current();
         const context = contextAt(world);
         return answerQuestion({
@@ -190,13 +235,18 @@ export function createGateway(deps: GatewayDeps): Estela {
           toRow: (row) => opsRow(context, actor, row, eventsOf(world, row)),
         });
       },
-      describeFilter(actor, filter) {
+      describeFilter(asker: Actor, filter) {
+        const actor = staffOnly(asker);
         const now = clock.now();
-        const visible = directory.shipments.filter((shipment) => inScope(actor, shipment));
+        const visible = directory.shipments.filter(
+          (shipment) => actor !== null && inScope(actor, shipment),
+        );
         const vocabulary = vocabularyOf({ directory, now, rawOf: (id) => store.raw(id) }, visible);
         return describeFilter(filter, vocabulary, now);
       },
-      async draft(actor, shipmentId, kind) {
+      async draft(asker: Actor, shipmentId, kind) {
+        const actor = staffOnly(asker);
+        if (!actor) return null;
         const world = await projector.current();
         const row = find(actor, world, shipmentId);
         if (!row) return null;
@@ -245,16 +295,16 @@ export function createGateway(deps: GatewayDeps): Estela {
     portal: {
       async home(actor) {
         const world = await projector.current();
-        const items = scoped(actor, world).map((row) =>
-          customerItem(row, eventsOf(world, row), world.now),
+        const views = scoped(actor, world).map((row) =>
+          customerView(row, eventsOf(world, row), world.now),
         );
-        return portalHome(contextAt(world), actor.accountId, items);
+        return portalHome(contextAt(world), actor.accountId, views);
       },
       async shipment(actor, id) {
         const world = await projector.current();
         const row = find(actor, world, id);
         if (!row) return null;
-        return portalShipment(contextAt(world), customerItem(row, eventsOf(world, row), world.now));
+        return portalShipment(contextAt(world), customerView(row, eventsOf(world, row), world.now));
       },
     },
 
@@ -270,10 +320,10 @@ export function createGateway(deps: GatewayDeps): Estela {
             perimeter: `${perimeterWords(directory, actor)} · ${plural(count, "shipment")}`,
           };
         }),
-      events: () => demoFeed.events(store),
+      events: () => demoFeed.events(log),
       async send(id) {
         const ready = demoFeed
-          .events(store)
+          .events(log)
           .some((event) => event.id === id && event.state === "ready");
         // Ingestion is asynchronous: until it lands in the log, the event still reads as ready.
         if (!ready || sending.has(id)) return;

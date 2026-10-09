@@ -13,7 +13,8 @@ export type DemoEventStatus = {
 /** What the feed needs to know about the log to say which of its events can be sent. */
 export type LogView = {
   events(): readonly LoggedEvent[];
-  raw(id: string): RawMessage | undefined;
+  /** Whether the message with that id was taken in, however ingestion chose to keep it. */
+  received(messageId: string): boolean;
 };
 
 /**

@@ -1,6 +1,7 @@
 import type { InternalEvent } from "./log";
 import {
   isPhysical,
+  type DocumentType,
   type HoldKind,
   type MilestoneCode,
   type Place,
@@ -13,11 +14,9 @@ import type { Instant, Precision } from "./time";
 
 export type Confirmed = { kind: "confirmed"; source: Source; rawId: string; receivedAt: Instant };
 export type Declared = { kind: "declared"; source: Source; rawId: string; receivedAt: Instant };
-/** Computed by Estela's estimator. No slot that holds a fact accepts it. */
-export type Estimated = { kind: "estimated"; basis: string; computedAt: Instant };
 /** Taken from the booking plan: nobody has asserted it. */
 export type Planned = { kind: "planned" };
-export type Provenance = Confirmed | Declared | Estimated | Planned;
+export type Provenance = Confirmed | Declared | Planned;
 
 export type Stamp<P extends Provenance> = { at: Instant; precision: Precision; provenance: P };
 
@@ -54,6 +53,11 @@ export type HoldEntry = {
   hold: HoldKind;
   open: boolean;
   reason: string;
+  /**
+   * The document the hold is said to be waiting for. Absent means none was named: what would
+   * release the goods is then not known, and no rule may assume it.
+   */
+  requires?: DocumentType;
   raised: Stamp<Declared>;
   clearedAt?: Instant;
   reading: ReadingState;
@@ -106,8 +110,11 @@ export type Timeline = {
   sections: TimelineSection[];
   /** The last time each source was heard from, about anything. */
   signals: Signal[];
-  /** When the latest fact reached us; unconfirmed and rejected model readings do not count. */
-  lastFactReceivedAt: Instant | null;
+  /**
+   * The latest fact to reach us and who sent it, kept together so that a time is never shown
+   * next to another sender's name. Unconfirmed and rejected model readings do not count.
+   */
+  lastFact: { receivedAt: Instant; source: Source } | null;
 };
 
 export function allEntries(timeline: Timeline): TimelineEntry[] {

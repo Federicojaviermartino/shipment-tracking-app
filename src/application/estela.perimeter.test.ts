@@ -54,6 +54,61 @@ describe("queries", () => {
     expect(ids.sort()).toEqual(vauclair.sort());
     expect(home.account.name).toBe("Vauclair Hydraulique SAS");
   });
+
+  test("nothing a customer is sent names an operator: the route says how the cargo travels, not with whom", async () => {
+    const { estela, marta, mariana, camille } = await startEstela();
+    const operators = (await estela.ops.overview(marta)).filterOptions.operators;
+    expect(operators.map((operator) => operator.name)).toEqual(
+      expect.arrayContaining(["Transportes Cierzo", "Noray Lines", "Turia Global Forwarding"]),
+    );
+
+    for (const customer of [mariana, camille]) {
+      const home = await estela.portal.home(customer);
+      const ids = [...home.attention, ...home.onTheWay, ...home.delivered].map((card) => card.id);
+      const pages = await Promise.all(ids.map((id) => estela.portal.shipment(customer, id)));
+      expect(pages.length).toBeGreaterThan(3);
+      const sent = JSON.stringify({ home, pages });
+      for (const operator of operators) {
+        expect(sent, `${customer.name}: ${operator.name}`).not.toContain(operator.name);
+      }
+      for (const page of pages) {
+        expect(page?.route.legs.length, page?.id).toBeGreaterThan(0);
+        for (const leg of page?.route.legs ?? []) {
+          expect(Object.keys(leg).sort(), page?.id).toEqual(["mode", "problem"]);
+        }
+      }
+    }
+  });
+
+  test("the operations queries answer an actor who is not staff with nothing, whatever a caller's types said", async () => {
+    const { estela, mariana } = await startEstela();
+    // What a wrongly narrowed persona in a component would do: at run time the type is not there.
+    const customer = mariana as unknown as InternalActor;
+
+    // EST-4012 and EST-4116 are her own account's shipments: in her perimeter, not on her desk.
+    expect(await estela.ops.shipment(customer, "EST-4012")).toBeNull();
+    expect(await estela.ops.shipments(customer, { view: "all" })).toEqual([]);
+    expect(await estela.ops.highlight(customer)).toBeNull();
+    expect(await estela.ops.draft(customer, "EST-4116", "send_document")).toBeNull();
+
+    const asked = await estela.ops.ask(customer, "what's going on with order 48176?");
+    expect(asked).toMatchObject({ kind: "not_understood", rows: [] });
+    expect(JSON.stringify(asked)).not.toContain("Read by AI");
+    expect(JSON.stringify(asked)).not.toContain("Estela estimate");
+
+    const overview = await estela.ops.overview(customer);
+    expect(overview.counts.all).toBe(0);
+    expect(overview.filterOptions).toEqual({
+      countries: [],
+      sites: [],
+      accounts: [],
+      operators: [],
+      vessels: [],
+    });
+    expect(estela.ops.describeFilter(customer, { operatorId: "TGF" })).toEqual([
+      { field: "operatorId", label: "Operator: TGF" },
+    ]);
+  });
 });
 
 describe("asking", () => {
@@ -231,5 +286,28 @@ describe("live updates", () => {
     unsubscribe();
     await estela.demo.send("A");
     expect(changes).toEqual([]);
+  });
+
+  test("a listener that throws fails alone: the others still hear the change, and its error is reported", async () => {
+    const reported: unknown[] = [];
+    const { estela, marta, mariana } = await startEstela({
+      reportError: (error) => reported.push(error),
+    });
+    const heard: string[] = [];
+    estela.demo.subscribe(() => {
+      throw new Error("the demo bar failed");
+    });
+    estela.demo.subscribe(() => heard.push("demo bar"));
+    estela.subscribe(marta, () => {
+      throw new Error("the operations screen failed");
+    });
+    estela.subscribe(mariana, () => heard.push("portal"));
+
+    await estela.demo.send("A");
+    expect(heard).toEqual(["demo bar", "portal"]);
+    expect(reported).toEqual([
+      new Error("the demo bar failed"),
+      new Error("the operations screen failed"),
+    ]);
   });
 });

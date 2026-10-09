@@ -1,10 +1,10 @@
-import { HOLD_LABEL, MILESTONE_LABEL } from "@/domain/labels";
+import { HOLD_LABEL, MILESTONE_LABEL, plural } from "@/domain/labels";
 import type { OperatorEvent } from "@/domain/log";
 import type { ShipmentProjection } from "@/domain/projection";
 import type { ShipmentId } from "@/domain/shipment";
 import { diffDays, formatDay, localDate } from "@/domain/time";
 import { milestonesOf } from "@/domain/timeline";
-import { list, lowerFirst, plural, withoutFullStop } from "./format";
+import { list, lowerFirst, withoutFullStop } from "./format";
 
 /**
  * What an operator update says, in the one line of a toast. When a message carries several

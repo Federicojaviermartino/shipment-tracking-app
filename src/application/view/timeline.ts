@@ -1,7 +1,9 @@
 import { assertNever } from "@/domain/assert-never";
 import { DESK_ZONE } from "@/domain/filters";
 import { HOLD_LABEL, MILESTONE_LABEL } from "@/domain/labels";
-import { internalEvents, operatorEvents, type LoggedEvent, type OperatorEvent } from "@/domain/log";
+import { latestReviews, operatorEvents, type LoggedEvent, type OperatorEvent } from "@/domain/log";
+import type { InternalActor } from "@/domain/perimeter";
+import { canPerform, REVIEW_REQUIRES } from "@/domain/playbook";
 import type { ShipmentProjection } from "@/domain/projection";
 import { originPlace, type Section, type Shipment } from "@/domain/shipment";
 import type { Precision, Zone } from "@/domain/time";
@@ -14,6 +16,7 @@ import {
 } from "@/domain/timeline";
 import type { ReadContext } from "../context";
 import { sourceName, userName } from "../directory";
+import { roleReason } from "../text/case-text";
 import { CHANNEL_LABEL } from "../text/format";
 import type {
   RawMessageView,
@@ -90,14 +93,11 @@ export function reviewersOf(
   context: ReadContext,
   events: readonly LoggedEvent[],
 ): Map<string, string> {
-  const reviewers = new Map<string, { at: number; by: string }>();
-  for (const event of internalEvents(events)) {
-    if (event.type !== "reading_reviewed") continue;
-    const kept = reviewers.get(event.eventKey);
-    if (!kept || event.at >= kept.at) reviewers.set(event.eventKey, { at: event.at, by: event.by });
-  }
   return new Map(
-    [...reviewers].map(([key, review]) => [key, userName(context.directory, review.by)]),
+    [...latestReviews(events)].map(([key, review]) => [
+      key,
+      userName(context.directory, review.by),
+    ]),
   );
 }
 
@@ -145,6 +145,7 @@ function sectionHeader(
  */
 export function timelineView(
   context: ReadContext,
+  actor: InternalActor,
   projection: ShipmentProjection,
   events: readonly LoggedEvent[],
 ): TimelineView {
@@ -165,6 +166,9 @@ export function timelineView(
     state,
     reviewedBy: reviewers.get(eventKey) ?? null,
   });
+  const reviewRefusal = canPerform(actor, REVIEW_REQUIRES)
+    ? null
+    : roleReason(context, shipment, REVIEW_REQUIRES);
   const sourceView = (
     source: { source: string; rawId: string; at: number },
     precision: Precision,
@@ -263,6 +267,10 @@ export function timelineView(
           text: entry.text,
           status: entry.status ?? null,
           statusLabel: entry.status ? NOTE_STATUS_LABEL[entry.status] : null,
+          reading:
+            entry.status === "ai_pending" || entry.status === "ai_rejected"
+              ? { eventKey: entry.eventKey, state: entry.status, disabledReason: reviewRefusal }
+              : null,
           source: sourceView(entry, precisionOf(entry.eventKey, "minute"), zone),
         };
       case "action":

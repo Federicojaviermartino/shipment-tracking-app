@@ -196,6 +196,8 @@ export type EventOptions = {
   place?: Place;
   reading?: Reading;
   remark?: string;
+  /** For a hold: the document its reason says is required. */
+  requires?: DocumentType;
 };
 
 function record(
@@ -291,7 +293,13 @@ export function hold(
 ): OperatorEvent {
   return record(
     shipment,
-    { type: "hold", hold: kind, state, reason: options.remark ?? "Held for a document check" },
+    {
+      type: "hold",
+      hold: kind,
+      state,
+      reason: options.remark ?? "Held for a document check",
+      ...(options.requires ? { requires: options.requires } : {}),
+    },
     occurredAt,
     options,
     kind === "customs" ? "TGF" : "CRZ",
@@ -427,7 +435,6 @@ export function estelaEstimate(
     steps: options.steps ?? [],
     ...(options.assumption ? { assumption: options.assumption } : {}),
     basis: "Rule-based estimate",
-    computedAt: 0,
   };
 }
 

@@ -77,6 +77,10 @@ export interface Estela {
   now(): Instant;
   actors(): Actor[];
 
+  /**
+   * The operations side, for Ibón staff. The gateway checks the kind of actor again at run time:
+   * a query from anybody else is answered with nothing, a command is refused.
+   */
   ops: {
     /** The briefing: computed counts, the identity line and the vocabulary of the perimeter. */
     overview(actor: InternalActor): Promise<OpsOverview>;

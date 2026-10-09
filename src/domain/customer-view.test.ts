@@ -19,6 +19,7 @@ import {
   operatorContacted,
   PERPIGNAN,
   position,
+  QUERETARO,
   remark,
   reviewed,
   roadShipment,
@@ -105,6 +106,35 @@ describe("facts flow", () => {
         when: { at: at("2026-10-09 06:00", MEXICO), precision: "minute", kind: "estimated" },
       },
       incoterm: { code: "DAP", place: "Querétaro", consigneeClearsImport: true },
+    });
+  });
+
+  test("carries the route as stops and legs with the cargo placed on it, and no word on who carries it", () => {
+    expect(customer.route).toEqual({
+      stops: [
+        {
+          place: { name: "Zaragoza", country: "ES", zone: "Europe/Madrid" },
+          role: "origin",
+          gate: null,
+        },
+        {
+          place: { name: "Valencia", country: "ES", zone: "Europe/Madrid" },
+          role: "port",
+          gate: "export",
+        },
+        {
+          place: { name: "Veracruz", country: "MX", zone: "America/Mexico_City" },
+          role: "port",
+          gate: "import",
+        },
+        {
+          place: { name: "Querétaro", country: "MX", zone: "America/Mexico_City" },
+          role: "consignee",
+          gate: null,
+        },
+      ],
+      legs: [{ mode: "road" }, { mode: "sea" }, { mode: "road" }],
+      position: { on: "leg", index: 1 },
     });
   });
 
@@ -230,6 +260,13 @@ describe("predictions wait", () => {
     });
   });
 
+  test("never reads on time without an estimate to stand behind it", () => {
+    const unavailable = { withheld: true as const, reason: "the estimator is unavailable" };
+    expect(view(ocean, atSea, estelaEstimate("2026-10-14"), T0).verdict).toBe("on_time");
+    expect(view(ocean, atSea, unavailable, T0).verdict).toBe("in_progress");
+    expect(view(ocean, atSea, null, T0).verdict).toBe("in_progress");
+  });
+
   test("never reads on time while any exception is open, even one that is not about the date", () => {
     const truck = roadShipment({ telematics: true });
     const silent = [
@@ -261,6 +298,24 @@ describe("holds", () => {
       hold: "customs",
       holds: [{ hold: "customs", since: at("2026-10-12 17:55") }],
       reason: { from: "fact", text: "Customs is holding the shipment for a check." },
+    });
+  });
+
+  test("a hold reported by a table reaches the customer even while a reading of the same hold waits", () => {
+    const read = hold(ocean, "customs", "raised", at("2026-10-12 17:55"), { reading: AI_READING });
+    const mapped = hold(ocean, "customs", "raised", at("2026-10-13 08:30"));
+    const projection = projectShipment({
+      shipment: ocean,
+      events: [...lodged, read, mapped],
+      estimate: null,
+      now,
+    });
+    expect(projection.exceptions[0]).toMatchObject({ type: "customs_hold" });
+    expect(projection.exceptions[0]?.needsConfirmation).toBeUndefined();
+    expect(view(ocean, [...lodged, read, mapped], null, now)).toMatchObject({
+      verdict: "on_hold",
+      hold: "customs",
+      holds: [{ hold: "customs", since: at("2026-10-13 08:30") }],
     });
   });
 
@@ -326,14 +381,23 @@ describe("what never reaches the customer", () => {
         "milestones",
         "notices",
         "orderRef",
+        "originSiteId",
         "published",
         "reason",
+        "route",
         "shipmentId",
         "stage",
         "verdict",
         "zone",
       ].sort(),
     );
+  });
+
+  test("a place is a name, a country and a zone: a port's code in the plan does not travel", () => {
+    const coded = oceanShipment({
+      consignee: { name: "Aquabajío", place: { ...QUERETARO, locode: "MXQRO" } },
+    });
+    expect(view(coded, [], null, T0).consignee.place).toEqual(QUERETARO);
   });
 
   test("only customer-visible documents are listed", () => {

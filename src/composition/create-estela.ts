@@ -55,7 +55,15 @@ export type EstelaDeps = {
    * when the log changes and are never waited for.
    */
   aiLatencyMs: number;
+  /** Defaults to raising it as an uncaught error, which a browser and a test run both report. */
+  reportError?: (error: unknown) => void;
 };
+
+function raiseUncaught(error: unknown): void {
+  queueMicrotask(() => {
+    throw error;
+  });
+}
 
 const DIRECTORY: Directory = {
   manufacturer: MANUFACTURER,
@@ -69,7 +77,12 @@ const DIRECTORY: Directory = {
 /**
  * The one place where ports meet adapters and the synthetic world. The seed goes through the
  * same ingestion as a live message: the application really parses raw operator text when it
- * starts. Replacing a mock for production is a change in this file and nowhere else.
+ * starts. A production adapter is wired in here and nowhere else, but wiring is not all it takes:
+ * the estimator port also carries wording (the labels of its steps, what it assumes, when it firms
+ * up), and the playbook asks the operator first or not from the sources and the assumption an
+ * estimate declares, so a replacement has to honour those too. What no adapter can undo is in the
+ * application: no estimate is asked for a delivered or a stale shipment, and an estimator that
+ * fails is a withheld estimate.
  */
 export async function createEstela(deps: EstelaDeps): Promise<Estela> {
   const { clock, store, aiLatencyMs } = deps;
@@ -105,6 +118,7 @@ export async function createEstela(deps: EstelaDeps): Promise<Estela> {
     clock,
     ingestion,
     demoFeed,
+    reportError: deps.reportError ?? raiseUncaught,
     estimator: ai.estimator,
     digestWriter: {
       highlight: withLatency((facts) => ai.digestWriter.highlight(facts), aiLatencyMs),
@@ -158,7 +172,7 @@ export function createBrowserEstela(): Promise<Estela> {
  * that stands still at `at` until the test moves it.
  */
 export async function createTestEstela(
-  options: { at?: Instant; ai?: Partial<AiPorts> } = {},
+  options: { at?: Instant; ai?: Partial<AiPorts>; reportError?: (error: unknown) => void } = {},
 ): Promise<{
   estela: Estela;
   clock: ManualClock;
@@ -166,6 +180,7 @@ export async function createTestEstela(
 }> {
   const clock = new ManualClock(options.at ?? T0);
   const store = new InMemoryEventStore();
-  const estela = await createEstela({ clock, store, aiLatencyMs: 0, ai: options.ai });
+  const { ai, reportError } = options;
+  const estela = await createEstela({ clock, store, aiLatencyMs: 0, ai, reportError });
   return { estela, clock, store };
 }

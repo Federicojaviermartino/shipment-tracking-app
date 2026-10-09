@@ -1,4 +1,4 @@
-import { act, screen, within } from "@testing-library/react";
+import { act, cleanup, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Suspense } from "react";
 import { beforeAll, describe, expect, test, vi } from "vitest";
@@ -100,6 +100,39 @@ describe("OpsShipmentScreen", () => {
     expect(confirmed.getByRole("button", { name: "Send invoice" })).not.toHaveAttribute(
       "aria-disabled",
     );
+  });
+
+  test("lets a rejected reading be confirmed after all, from its note in the timeline", async () => {
+    const { estela, marta, lucia } = await startEstela();
+    await open(estela, marta, "EST-4012");
+    const panel = within(
+      await screen.findByRole("region", { name: /^Held: customs hold, read by AI/ }),
+    );
+    await userEvent.click(panel.getByRole("button", { name: "Not right" }));
+
+    const timeline = within(screen.getByRole("region", { name: "Timeline" }));
+    const again = await timeline.findByRole("button", { name: "Confirm after all" });
+    expect(screen.queryByRole("region", { name: /^Held/ })).not.toBeInTheDocument();
+    expect(again.closest("li")).toHaveTextContent("AI reading rejected: shown as received");
+
+    await userEvent.click(again);
+
+    const confirmed = within(await screen.findByRole("region", { name: "Held: customs hold" }));
+    expect(confirmed.getByText("Read by AI · confirmed by Marta Soler")).toBeInTheDocument();
+    expect(timeline.queryByRole("button", { name: "Confirm after all" })).not.toBeInTheDocument();
+
+    // Support reads the same note; the decision is not theirs to take.
+    await estela.ops.execute(marta, {
+      type: "confirm_reading",
+      shipmentId: "EST-4012",
+      eventKey: (await estela.ops.shipment(marta, "EST-4012"))?.case?.reading?.eventKey ?? "",
+      accepted: false,
+    });
+    cleanup();
+    await open(estela, lucia, "EST-4012");
+    expect(
+      await screen.findByRole("button", { name: "Confirm after all" }),
+    ).toHaveAccessibleDescription("Needs the Logistics role. Ask Marta Soler.");
   });
 
   test("leads from a line of evidence to its entry in the timeline", async () => {

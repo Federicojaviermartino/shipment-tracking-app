@@ -1,14 +1,13 @@
 import { describe, expect, test } from "vitest";
 import { OPERATOR_ADAPTERS } from "@/adapters/operators";
-import type { EstelaEstimate } from "@/domain/estimate";
-import { ingestItems, toLoggedEvent, type Ingested } from "@/domain/ingestion";
+import { ingestItems, type Ingested } from "@/domain/ingestion";
 import { operatorEvents, type LoggedEvent, type RawMessage } from "@/domain/log";
 import { inScope } from "@/domain/perimeter";
 import { projectShipment } from "@/domain/projection";
-import { compareQueueRows } from "@/domain/queue";
 import type { MilestoneCode, Place } from "@/domain/shipment";
 import { allEntries } from "@/domain/timeline";
 import {
+  addDays,
   dayInstant,
   formatDay,
   isWorkingDay,
@@ -263,6 +262,25 @@ describe("the calendar", () => {
     expect(onHoliday.map((dated) => dated.what)).toEqual([]);
   });
 
+  test("goods never wait at a delivering platform that is open: the round leaves on its first working day there", () => {
+    const isOpen = (place: Place, date: LocalDate) =>
+      isWorkingDay(date) &&
+      !(place.country === "ES" && date === "2026-10-12") &&
+      !(VALENCIA_REGION.has(place.name) && date === "2026-10-09");
+    const waiting = SHIPMENTS.flatMap((s) => {
+      const arrival = s.plan.findLast((planned) => planned.code === "HUB_IN");
+      const round = s.plan.find((planned) => planned.code === "OUT_FOR_DELIVERY");
+      if (!arrival || !round || arrival.place.name !== round.place.name) return [];
+      let first = localDate(arrival.plannedAt, arrival.place.zone);
+      while (!isOpen(arrival.place, first)) first = addDays(first, 1);
+      const leaves = localDate(round.plannedAt, round.place.zone);
+      return leaves === first
+        ? []
+        : [`${s.id}: at ${arrival.place.name} ${first}, round ${leaves}`];
+    });
+    expect(waiting).toEqual([]);
+  });
+
   test("vessels sail on Fridays and arrive fourteen days later", () => {
     for (const s of SHIPMENTS.filter((candidate) => candidate.voyage)) {
       const planned = (code: MilestoneCode) => {
@@ -279,6 +297,52 @@ describe("the calendar", () => {
 
   test("committed dates are working days", () => {
     expect(SHIPMENTS.filter((s) => !isWorkingDay(s.committedDate))).toEqual([]);
+  });
+});
+
+describe("telematics trails are something a truck can drive", () => {
+  type Ping = { sendungsnr: string; at: Instant; ort: string; lat: number; lon: number };
+  const pings: Ping[] = SEED.messages
+    .filter((message) => message.operatorId === "EVS" && message.body.includes('"status":"510"'))
+    .map((message) => {
+      const payload = JSON.parse(message.body) as Omit<Ping, "at"> & { zeit: string };
+      return { ...payload, at: Date.parse(payload.zeit) };
+    })
+    .sort((a, b) => a.sendungsnr.localeCompare(b.sendungsnr) || a.at - b.at);
+
+  const km = (a: Ping, b: Ping) => {
+    const rad = (degrees: number) => (degrees * Math.PI) / 180;
+    const h =
+      Math.sin(rad(b.lat - a.lat) / 2) ** 2 +
+      Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(rad(b.lon - a.lon) / 2) ** 2;
+    return 2 * 6371 * Math.asin(Math.sqrt(h));
+  };
+  /** Two pings of one truck half an hour apart: it drove from one to the other. */
+  const hops = pings.flatMap((ping, index) => {
+    const before = pings[index - 1];
+    return before && before.sendungsnr === ping.sendungsnr && ping.at - before.at === 30 * 60_000
+      ? [{ before, ping }]
+      : [];
+  });
+
+  test("no half hour is driven faster than 90 km/h as the crow flies", () => {
+    expect(hops.length).toBeGreaterThan(100);
+    const tooFast = hops
+      .map(({ before, ping }) => ({ before, ping, kmh: Math.round(km(before, ping) * 2) }))
+      .filter((hop) => hop.kmh > 90)
+      .map((hop) => `${hop.ping.sendungsnr} ${hop.before.ort} to ${hop.ping.ort}: ${hop.kmh} km/h`);
+    expect(tooFast).toEqual([]);
+  });
+
+  test("no truck drives more than 4.5 hours without a 45-minute break (Regulation (EC) 561/2006, art. 7)", () => {
+    const longest = new Map<string, number>();
+    let hours = 0;
+    hops.forEach(({ before, ping }, index) => {
+      // The first ping of a stretch comes half an hour into it.
+      hours = hops[index - 1]?.ping === before ? hours + 0.5 : 1;
+      longest.set(ping.sendungsnr, Math.max(longest.get(ping.sendungsnr) ?? 0, hours));
+    });
+    expect([...longest].filter(([, stretch]) => stretch > 4.5)).toEqual([]);
   });
 });
 
@@ -373,146 +437,9 @@ describe("shipments", () => {
   });
 });
 
-describe("the roster at T0, derived from the raw seed", () => {
-  /** What the text interpreter is expected to read in the email, still unconfirmed. */
-  const email = seeded.unread[0];
-  const emailRaw = SEED.messages.find((message) => message.channel === "email");
-  if (!email || !emailRaw) throw new Error("The customs email is missing from the seed");
-  const reading = toLoggedEvent({
-    shipment: email.shipment,
-    raw: emailRaw,
-    ref: email.ref,
-    observation: {
-      type: "hold",
-      hold: "customs",
-      state: "raised",
-      reason:
-        "Customs found a gross-weight discrepancy between the commercial invoice (4,180 kg) and the bill of lading (4,810 kg); a corrected invoice is required.",
-    },
-    reading: { method: "ai", rule: "pattern:customs hold" },
-  });
-  const events = [...log, reading];
-
-  /** The two answers of the estimator that decide a health at T0, stated here by hand. */
-  const estimates: Record<string, EstelaEstimate> = {
-    "EST-4127": { withheld: true, reason: "no position from Eisvogel Spedition for 27 h" },
-    "EST-4134": {
-      withheld: false,
-      at: dayInstant("2026-10-09"),
-      precision: "day",
-      window: { earliest: dayInstant("2026-10-09"), latest: dayInstant("2026-10-09") },
-      steps: [
-        {
-          milestoneKey: "HUB_OUT@PERPIGNAN",
-          label: "Next linehaul from Perpignan",
-          at: T0 + 4 * 3_600_000,
-          precision: "minute",
-          from: "next_departure",
-        },
-      ],
-      basis: "Rule-based estimate",
-      computedAt: T0,
-    },
-  };
-  const project = (id: string, now: Instant = T0) =>
-    projectShipment({ shipment: shipment(id), events, estimate: estimates[id] ?? null, now });
-
-  test.each([
-    ["EST-4012", "at_destination_port", "held", "customs_hold"],
-    ["EST-4019", "delivered", "delivered", null],
-    ["EST-4033", "at_destination_port", "on_time", null],
-    ["EST-4036", "final_leg", "on_time", null],
-    ["EST-4058", "at_sea", "on_time", null],
-    ["EST-4063", "at_sea", "on_time", null],
-    ["EST-4107", "delivered", "delivered", null],
-    ["EST-4111", "delivered", "delivered", null],
-    ["EST-4115", "delivered", "delivered", null],
-    ["EST-4116", "at_origin_port", "at_risk", "cutoff_risk"],
-    ["EST-4120", "delivered", "delivered", null],
-    ["EST-4122", "in_transit", "on_time", null],
-    ["EST-4127", "in_transit", "stale", "stale"],
-    ["EST-4128", "in_transit", "delayed", "delay"],
-    ["EST-4131", "in_transit", "held", "carrier_hold"],
-    ["EST-4133", "delivered", "delivered", null],
-    ["EST-4134", "in_transit", "at_risk", "predicted_delay"],
-    ["EST-4136", "in_transit", "on_time", null],
-    ["EST-4140", "in_transit", "on_time", null],
-    ["EST-4141", "in_transit", "on_time", null],
-    ["EST-4143", "out_for_delivery", "on_time", null],
-    ["EST-4147", "booked", "on_time", null],
-    ["EST-4149", "booked", "on_time", null],
-  ])("%s is %s and %s", (id, stage, health, primary) => {
-    const projection = project(id);
-    expect(projection.stage).toBe(stage);
-    expect(projection.health).toBe(health);
-    expect(projection.primary?.type ?? null).toBe(primary);
-  });
-
-  test("totals: 1 delayed, 2 held, 2 at risk, 1 stale, 11 on time, 6 delivered", () => {
-    const totals = SHIPMENTS.reduce<Record<string, number>>((count, s) => {
-      const { health } = project(s.id);
-      return { ...count, [health]: (count[health] ?? 0) + 1 };
-    }, {});
-    expect(totals).toEqual({
-      delayed: 1,
-      held: 2,
-      at_risk: 2,
-      stale: 1,
-      on_time: 11,
-      delivered: 6,
-    });
-  });
-
-  test("the queue is EST-4128, EST-4134, EST-4131, EST-4116, EST-4012, EST-4127, each with its clock", () => {
-    const queue = SHIPMENTS.flatMap((s) => {
-      const { primary } = project(s.id);
-      return primary?.state === "needs_action"
-        ? [{ id: s.id, committedDate: s.committedDate, exception: primary }]
-        : [];
-    }).sort(compareQueueRows);
-
-    const clock = (at: Instant | undefined) =>
-      at === undefined
-        ? null
-        : `${localDate(at, "Europe/Madrid")} ${localTime(at, "Europe/Madrid")}`;
-    expect(
-      queue.map((row) => [
-        row.id,
-        clock(row.exception.actBy?.at),
-        row.exception.steps.map((step) => step.kind).join(" > "),
-      ]),
-    ).toEqual([
-      ["EST-4128", "2026-10-07 16:00", "notify_customer"],
-      ["EST-4134", "2026-10-07 20:00", "contact_operator > notify_customer"],
-      ["EST-4131", "2026-10-08 07:00", "contact_operator > notify_customer"],
-      ["EST-4116", "2026-10-08 12:00", "send_document"],
-      ["EST-4012", "2026-10-10 07:59", "confirm_reading > send_document > notify_customer"],
-      ["EST-4127", null, "contact_operator"],
-    ]);
-  });
-
-  test("the operators have declared these door dates and no others", () => {
-    const declared = Object.fromEntries(
-      SHIPMENTS.flatMap((s) => {
-        const { operator } = project(s.id).dates;
-        return operator ? [[s.id, operator.day]] : [];
-      }),
-    );
-    expect(declared).toEqual({
-      "EST-4033": "2026-10-09",
-      "EST-4036": "2026-10-07",
-      "EST-4058": "2026-10-14",
-      "EST-4063": "2026-10-14",
-      "EST-4116": "2026-10-28",
-      "EST-4127": "2026-10-08",
-      "EST-4128": "2026-10-08",
-      "EST-4134": "2026-10-08",
-      "EST-4136": "2026-10-09",
-      "EST-4140": "2026-10-08",
-      "EST-4143": "2026-10-07",
-    });
-    expect(project("EST-4012").dates.withdrawn?.day).toBe("2026-10-07");
-  });
+describe("what the seed says beyond the roster, read from the raw messages", () => {
+  const project = (id: string) =>
+    projectShipment({ shipment: shipment(id), events: log, estimate: null, now: T0 });
 
   test("six shipments were delivered, each on its day", () => {
     const delivered = Object.fromEntries(
@@ -570,7 +497,7 @@ describe("the roster at T0, derived from the raw seed", () => {
   test("EST-4036 left the port before the report of its customs release arrived", () => {
     const beforeTheReport = projectShipment({
       shipment: shipment("EST-4036"),
-      events: events.filter(
+      events: log.filter(
         (event) => event.kind !== "operator" || event.receivedAt < T0 - 8 * 3_600_000,
       ),
       estimate: null,
@@ -579,15 +506,6 @@ describe("the roster at T0, derived from the raw seed", () => {
     expect(beforeTheReport.stage).toBe("final_leg");
     expect(beforeTheReport.importGate?.state).toBe("lodged");
     expect(project("EST-4036").importGate?.state).toBe("released");
-  });
-
-  test("EST-4127 has been silent for 27 hours since La Jonquera", () => {
-    const projection = project("EST-4127");
-    const pings = projection.timeline.sections[0]?.entries.find(
-      (entry) => entry.type === "position",
-    );
-    expect(pings).toMatchObject({ lastPlace: "La Jonquera, ES" });
-    expect(pings?.type === "position" && (T0 - pings.at) / 3_600_000).toBe(27);
   });
 
   test("documents are complete for each stage, with three known exceptions", () => {

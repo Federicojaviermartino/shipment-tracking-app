@@ -6,7 +6,7 @@ import type { LoggedEvent, NoticeSent } from "@/domain/log";
 import type { InternalActor } from "@/domain/perimeter";
 import type { Step } from "@/domain/playbook";
 import type { ShipmentProjection } from "@/domain/projection";
-import type { OperatorId } from "@/domain/shipment";
+import { consigneeClearsImport, type OperatorId } from "@/domain/shipment";
 import type { ReadContext } from "./context";
 import { accountOf, operatorOf, shortAccountName, sourceName } from "./directory";
 import { collectFacts, factLines, type FactSheetLine } from "./fact-sheet";
@@ -116,9 +116,7 @@ export function planDraft(
       packages: shipment.cargo.packages,
       vessel: shipment.voyage ? `${shipment.voyage.vessel} ${shipment.voyage.voyage}` : null,
       container: shipment.cargo.container?.number ?? null,
-      consigneeClearsImport: shipment.sections.some(
-        (section) => section.kind === "port" && section.gate === "import",
-      ),
+      consigneeClearsImport: consigneeClearsImport(shipment),
     },
     recipient:
       audience === "customer"

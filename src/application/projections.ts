@@ -3,12 +3,14 @@ import { buildTimeline } from "@/domain/fold";
 import type { LoggedEvent } from "@/domain/log";
 import { projectShipment, type ShipmentProjection } from "@/domain/projection";
 import type { Shipment, ShipmentId } from "@/domain/shipment";
+import { nextExpectation } from "@/domain/staleness";
 import { MINUTE, type Instant } from "@/domain/time";
 import { isDelivered, type Timeline } from "@/domain/timeline";
 import type { Directory } from "./directory";
 import type { Clock } from "./ports/clock";
 import type { EtaEstimator } from "./ports/eta-estimator";
 import type { EventStore } from "./ports/event-store";
+import { ESTIMATOR_UNAVAILABLE, overdueReason } from "./text/case-text";
 
 /** Every shipment derived from the log at one instant. Nothing in it is stored anywhere. */
 export type World = {
@@ -70,17 +72,26 @@ export function createProjector(deps: {
     return folded;
   }
 
-  /** Fail closed: a model that breaks means "no estimate", never a broken screen. */
+  /**
+   * The estimate of an open shipment, or the reason there is none. Both guards stand here, around
+   * the port, so that they hold for whatever adapter is behind it: a shipment that owes an update
+   * is not put to the model at all, and a model that breaks is a withheld estimate that says so.
+   * Nothing downstream can then mistake "the model failed" for "the model agrees".
+   */
   async function estimateFor(
     shipment: Shipment,
     timeline: Timeline,
     now: Instant,
   ): Promise<EstelaEstimate | null> {
     if (isDelivered(timeline)) return null;
+    const expectation = nextExpectation(timeline);
+    if (expectation && now > expectation.by) {
+      return { withheld: true, reason: overdueReason(directory, expectation, now) };
+    }
     try {
-      return await estimator.estimate({ shipment, timeline, now, operators: directory.operators });
+      return await estimator.estimate({ shipment, timeline, now });
     } catch {
-      return null;
+      return { withheld: true, reason: ESTIMATOR_UNAVAILABLE };
     }
   }
 

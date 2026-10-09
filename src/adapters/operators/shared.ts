@@ -25,13 +25,40 @@ export function parseJson(body: string): { ok: true; value: unknown } | { ok: fa
   }
 }
 
-/** The data rows of a semicolon-separated message, without blank lines or the header row. */
+/** The lines of a file that hold something, as they came. */
+function lines(body: string): string[] {
+  return body.split(/\r?\n/).filter((line) => line.trim() !== "");
+}
+
+/**
+ * The data rows of a semicolon-separated message, without blank lines or the header row. The last
+ * column is free text and may hold the separator itself: whatever follows the columns before it
+ * is that one field.
+ */
 export function dataRows(body: string, header: string): string[][] {
-  return body
-    .split(/\r?\n/)
+  const before = header.split(";").length - 1;
+  return lines(body)
     .map((line) => line.trim())
-    .filter((line) => line !== "" && line !== header)
-    .map((line) => line.split(";").map((field) => field.trim()));
+    .filter((line) => line !== header)
+    .map((line) => {
+      const fields = line.split(";");
+      const row =
+        fields.length > before
+          ? [...fields.slice(0, before), fields.slice(before).join(";")]
+          : fields;
+      return row.map((field) => field.trim());
+    });
+}
+
+/**
+ * A file cut into its data rows, each as text that reads on its own: under the header when the
+ * file came with one.
+ */
+export function splitRows(body: string, header: string): string[] {
+  const isHeader = (line: string) => line.trim() === header;
+  const all = lines(body);
+  const headed = all.some(isHeader);
+  return all.filter((line) => !isHeader(line)).map((row) => (headed ? `${header}\n${row}` : row));
 }
 
 /** "21/09/2026" as a local date, or `null` when it is not a calendar day. */

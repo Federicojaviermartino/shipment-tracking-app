@@ -3,7 +3,7 @@ import { DESK_ZONE } from "@/domain/filters";
 import { DOCUMENT_LABEL, HOLD_LABEL, MILESTONE_LABEL, STAGE_LABEL } from "@/domain/labels";
 import type { LoggedEvent } from "@/domain/log";
 import type { ShipmentProjection } from "@/domain/projection";
-import { addDays, formatStamp, localDate } from "@/domain/time";
+import { addDays, formatStamp, localDate, type Instant } from "@/domain/time";
 import type { ReadContext } from "../context";
 import { accountOf, userName } from "../directory";
 import {
@@ -14,7 +14,7 @@ import {
   verdictLabel,
 } from "../text/customer-text";
 import type { PortalCard, PortalHome, PortalNoticeView, PortalShipmentView } from "../views";
-import { routeView, type RouteProblem } from "./route";
+import { customerRouteView, type RouteProblem } from "./route";
 
 /** How long a delivered shipment stays on the customer's home page. */
 const DELIVERED_DAYS_SHOWN = 30;
@@ -25,15 +25,16 @@ const STAMP_WORD: Record<CustomerStamp["kind"], string> = {
   planned: "Planned",
 };
 
-/** A shipment as its customer may see it: the narrow projection, and the full one it came from. */
-export type CustomerItem = { projection: ShipmentProjection; view: CustomerView };
-
-export function customerItem(
+/**
+ * A shipment as its customer may see it. This is the last place where the full projection is in
+ * reach: every builder below takes the narrow view, so nothing it lacks can end up on a page.
+ */
+export function customerView(
   projection: ShipmentProjection,
   events: readonly LoggedEvent[],
-  now: number,
-): CustomerItem {
-  const view = toCustomerView({
+  now: Instant,
+): CustomerView {
+  return toCustomerView({
     shipment: projection.shipment,
     timeline: projection.timeline,
     dates: projection.dates,
@@ -41,7 +42,6 @@ export function customerItem(
     events,
     now,
   });
-  return { projection, view };
 }
 
 /** Only what the customer was told is drawn on their route: a confirmed hold or a published delay. */
@@ -51,7 +51,7 @@ function problemOf(view: CustomerView): RouteProblem | null {
   return null;
 }
 
-function noticeViews(context: ReadContext, { view }: CustomerItem): PortalNoticeView[] {
+function noticeViews(context: ReadContext, view: CustomerView): PortalNoticeView[] {
   return view.notices.map((notice) => ({
     id: notice.id,
     shipmentId: view.shipmentId,
@@ -64,14 +64,13 @@ function noticeViews(context: ReadContext, { view }: CustomerItem): PortalNotice
   }));
 }
 
-export function portalCard(context: ReadContext, item: CustomerItem): PortalCard {
-  const { projection, view } = item;
+export function portalCard(context: ReadContext, view: CustomerView): PortalCard {
   return {
     id: view.shipmentId,
     orderRef: view.orderRef,
     cargo: `${view.cargo.packages} · ${view.cargo.description}`,
     destination: view.consignee.place.name,
-    route: routeView(context.directory, projection, { problem: problemOf(view), stale: false }),
+    route: customerRouteView(context.directory, view, problemOf(view)),
     stage: { code: view.stage, label: STAGE_LABEL[view.stage].customer },
     verdict: view.verdict,
     verdictLabel: verdictLabel(view),
@@ -80,8 +79,7 @@ export function portalCard(context: ReadContext, item: CustomerItem): PortalCard
   };
 }
 
-export function portalShipment(context: ReadContext, item: CustomerItem): PortalShipmentView {
-  const { projection, view } = item;
+export function portalShipment(context: ReadContext, view: CustomerView): PortalShipmentView {
   const { identifiers } = view;
   const references: PortalShipmentView["references"] = [
     { label: "Your order", value: view.orderRef },
@@ -105,13 +103,13 @@ export function portalShipment(context: ReadContext, item: CustomerItem): Portal
   }
 
   return {
-    ...portalCard(context, item),
+    ...portalCard(context, view),
     consignee: view.consignee.name,
     committed: view.committed,
     zone: view.zone,
     difference: differenceLine(view.committed, view.published),
     reason: view.reason?.text ?? null,
-    notices: noticeViews(context, item),
+    notices: noticeViews(context, view),
     milestones: view.milestones.map((milestone) => ({
       key: milestone.key,
       code: milestone.code,
@@ -132,7 +130,7 @@ export function portalShipment(context: ReadContext, item: CustomerItem): Portal
       at: document.at,
     })),
     references,
-    incotermLine: incotermLine(projection.shipment, "customer"),
+    incotermLine: incotermLine(identifiers.incoterm, "customer"),
   };
 }
 
@@ -140,20 +138,20 @@ export function portalShipment(context: ReadContext, item: CustomerItem): Portal
 export function portalHome(
   context: ReadContext,
   accountId: string,
-  items: readonly CustomerItem[],
+  views: readonly CustomerView[],
 ): PortalHome {
   const since = addDays(localDate(context.now, DESK_ZONE), -DELIVERED_DAYS_SHOWN);
-  const byCommitted = (a: CustomerItem, b: CustomerItem) =>
-    a.view.committed < b.view.committed ? -1 : a.view.committed > b.view.committed ? 1 : 0;
+  const byCommitted = (a: CustomerView, b: CustomerView) =>
+    a.committed < b.committed ? -1 : a.committed > b.committed ? 1 : 0;
 
-  const active = items.filter(({ view }) => view.verdict !== "delivered").sort(byCommitted);
+  const active = views.filter((view) => view.verdict !== "delivered").sort(byCommitted);
   const attention = active.filter(
-    ({ view }) => view.verdict === "delayed" || view.verdict === "on_hold",
+    (view) => view.verdict === "delayed" || view.verdict === "on_hold",
   );
-  const onTheWay = active.filter((item) => !attention.includes(item));
-  const delivered = items
+  const onTheWay = active.filter((view) => !attention.includes(view));
+  const delivered = views
     .filter(
-      ({ view }) =>
+      (view) =>
         view.published.kind === "confirmed" &&
         view.verdict === "delivered" &&
         view.published.day >= since,
@@ -169,9 +167,9 @@ export function portalHome(
     account: { id: accountId, name: accountOf(context.directory, accountId)?.name ?? accountId },
     counts,
     summary: portalSummary(counts),
-    notices: active.flatMap((item) => noticeViews(context, item)).sort((a, b) => b.at - a.at),
-    attention: attention.map((item) => portalCard(context, item)),
-    onTheWay: onTheWay.map((item) => portalCard(context, item)),
-    delivered: delivered.map((item) => portalCard(context, item)),
+    notices: active.flatMap((view) => noticeViews(context, view)).sort((a, b) => b.at - a.at),
+    attention: attention.map((view) => portalCard(context, view)),
+    onTheWay: onTheWay.map((view) => portalCard(context, view)),
+    delivered: delivered.map((view) => portalCard(context, view)),
   };
 }

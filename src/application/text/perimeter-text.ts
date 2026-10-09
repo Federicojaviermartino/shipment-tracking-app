@@ -1,6 +1,7 @@
+import { plural } from "@/domain/labels";
 import type { Actor, InternalActor } from "@/domain/perimeter";
 import { accountOf, shortAccountName, siteOf, type Directory } from "../directory";
-import { list, plural } from "./format";
+import { list } from "./format";
 
 function siteNames(directory: Directory, actor: InternalActor): string[] {
   if (actor.siteIds === "all") return [];

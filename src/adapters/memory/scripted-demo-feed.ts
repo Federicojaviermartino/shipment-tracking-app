@@ -34,7 +34,7 @@ export class ScriptedDemoFeed implements DemoFeed {
 
   events(log: LogView): DemoEventStatus[] {
     const sent = (event: ScriptedEvent) =>
-      event.messageIds.length > 0 && event.messageIds.every((id) => log.raw(id) !== undefined);
+      event.messageIds.length > 0 && event.messageIds.every((id) => log.received(id));
 
     const blockedBy = (precondition: ScriptPrecondition): string | null => {
       switch (precondition.kind) {

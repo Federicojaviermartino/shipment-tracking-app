@@ -152,10 +152,28 @@ describe("Noray: transport events are about the vessel", () => {
   });
 
   test("the tests above cover every row of the transport table", () => {
-    expect(NORAY_TRANSPORT.map((row) => `${row.code} ${row.classifier}`)).toEqual([
-      "DEPA ACT",
-      "ARRI ACT",
-      "ARRI EST",
+    expect(NORAY_TRANSPORT.map((row) => `${row.code} ${row.classifier} at ${row.role}`)).toEqual([
+      "DEPA ACT at origin",
+      "ARRI ACT at destination",
+      "ARRI EST at destination",
+    ]);
+  });
+
+  test.each([
+    ["berthing at the port of loading", "ARRI", "ACT", "ESVLC"],
+    ["an estimate of the berthing at the port of loading", "ARRI", "EST", "ESVLC"],
+    ["sailing from the port of discharge", "DEPA", "ACT", "MXVER"],
+  ])("%s is the other end of the voyage: a note", (_, code, classifier, locode) => {
+    const event = {
+      ...arrival,
+      transportEventTypeCode: code,
+      eventClassifierCode: classifier,
+      UNLocationCode: locode,
+    };
+    expect(items(event)).toEqual([
+      expect.objectContaining({
+        observation: { type: "note", text: `Transport event ${code} ${classifier} at ${locode}` },
+      }),
     ]);
   });
 
@@ -180,6 +198,12 @@ describe("Noray: transport events are about the vessel", () => {
     expect(item).toMatchObject({
       observation: { type: "note", text: "Transport event DEPA EST at MXVER" },
     });
+  });
+
+  test("an arrival estimate whose delay reason and remark are null is still an estimate", () => {
+    expect(items({ ...arrival, delayReasonCode: null, changeRemark: null })).toEqual(
+      items(arrival),
+    );
   });
 });
 

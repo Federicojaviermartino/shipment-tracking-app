@@ -82,8 +82,3 @@ export function nextExpectation(timeline: Timeline): Expectation | null {
       .sort((a, b) => a.by - b.by)[0] ?? null
   );
 }
-
-/** The instant after which the shipment is stale, or `null`. Unknown is not late: it is its own state. */
-export function expectedUpdateBy(timeline: Timeline): Instant | null {
-  return nextExpectation(timeline)?.by ?? null;
-}

@@ -1,6 +1,6 @@
 import { EISVOGEL } from "@/adapters/operators/eisvogel/mapping";
 import { IBON, type Deadline, type Place, type Shipment } from "@/domain/shipment";
-import { MINUTE, type Instant, type LocalDate } from "@/domain/time";
+import { HOUR, MINUTE, type Instant, type LocalDate } from "@/domain/time";
 import { at, MADRID } from "../calendar";
 import type { Consignee } from "../directory";
 import { eisvogelFeed, type SeedMessage, type Waypoint } from "../feed";
@@ -19,7 +19,10 @@ type EuRoadBase = {
   proofOfDelivery?: string;
 };
 
-/** A stretch of driving along a route. Times are wall-clock, the same from Spain to Germany. */
+/**
+ * A day at the wheel along a route, from setting off to parking, the driver's breaks included.
+ * Times are wall-clock, the same from Spain to Germany.
+ */
 export type Drive = { from: string; to: string; route: Waypoint[] };
 
 /**
@@ -33,18 +36,55 @@ export type FullLoadRow = EuRoadBase & {
 
 const PING_EVERY = 30 * MINUTE;
 
+/** Regulation (EC) 561/2006, art. 7: a 45-minute break after four and a half hours at the wheel. */
+const WHEEL_TIME = 4.5 * HOUR;
+const BREAK = 45 * MINUTE;
+
+/** How long the truck has been moving, `elapsed` into a drive, and whether it is moving then. */
+function atTheWheel(elapsed: number): { driven: number; moving: boolean } {
+  const stretches = Math.floor(elapsed / (WHEEL_TIME + BREAK));
+  const intoStretch = elapsed - stretches * (WHEEL_TIME + BREAK);
+  return {
+    driven: stretches * WHEEL_TIME + Math.min(intoStretch, WHEEL_TIME),
+    moving: intoStretch > 0 && intoStretch <= WHEEL_TIME,
+  };
+}
+
+/** Great-circle distance: close enough to the road to pace a truck along its waypoints. */
+function km(a: Waypoint, b: Waypoint): number {
+  const rad = (degrees: number) => (degrees * Math.PI) / 180;
+  const h =
+    Math.sin(rad(b.lat - a.lat) / 2) ** 2 +
+    Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(rad(b.lon - a.lon) / 2) ** 2;
+  return 2 * 6371 * Math.asin(Math.sqrt(h));
+}
+
+/**
+ * The pings of one drive: the truck keeps one speed along the route, stops for its breaks, and
+ * the unit reports on its 30-minute beat only while the truck moves. Each ping is named after
+ * the waypoint it is closest to.
+ */
 function positionsAlong(drive: Drive): { waypoint: Waypoint; at: Instant }[] {
   const start = at(drive.from, MADRID);
   const end = at(drive.to, MADRID);
-  const last = drive.route.length - 1;
+  const marks = drive.route.reduce<number[]>((sums, waypoint, index) => {
+    const previous = drive.route[index - 1];
+    return [...sums, previous ? (sums.at(-1) ?? 0) + km(previous, waypoint) : 0];
+  }, []);
+  const total = marks.at(-1) ?? 0;
+  const drivingTime = atTheWheel(end - start).driven;
+
   const pings: { waypoint: Waypoint; at: Instant }[] = [];
   for (let time = start + PING_EVERY; time <= end; time += PING_EVERY) {
-    const progress = ((time - start) / (end - start)) * last;
-    const behind = drive.route[Math.floor(progress)];
-    const ahead = drive.route[Math.ceil(progress)];
-    const nearest = drive.route[Math.round(progress)];
-    if (!behind || !ahead || !nearest) continue;
-    const share = progress - Math.floor(progress);
+    const { driven, moving } = atTheWheel(time - start);
+    if (!moving) continue;
+    const covered = (driven / drivingTime) * total;
+    const next = marks.findIndex((mark, index) => index > 0 && mark >= covered);
+    const [behind, ahead] = [drive.route[next - 1], drive.route[next]];
+    const [from, to] = [marks[next - 1], marks[next]];
+    if (!behind || !ahead || from === undefined || to === undefined) continue;
+    const share = (covered - from) / (to - from);
+    const nearest = share < 0.5 ? behind : ahead;
     pings.push({
       at: time,
       waypoint: {

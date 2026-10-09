@@ -1,4 +1,5 @@
 import type { DigestCase, DigestFacts, DigestWriter } from "@/application/ports/digest-writer";
+import { list } from "@/application/text/format";
 import { assertNever } from "@/domain/assert-never";
 import { DOCUMENT_LABEL } from "@/domain/labels";
 import { addDays, formatDay, localDate, localTime, type Instant, type Zone } from "@/domain/time";
@@ -11,11 +12,6 @@ function when(at: Instant, now: Instant, zone: Zone): string {
   if (day === today) return `${time >= "18:00" ? "tonight's" : "today's"} ${time}`;
   if (day === addDays(today, 1)) return `tomorrow's ${time}`;
   return `the ${formatDay(day)} ${time}`;
-}
-
-function list(items: string[]): string {
-  if (items.length <= 1) return items.join("");
-  return `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
 }
 
 function clause(item: DigestCase, now: Instant): string {

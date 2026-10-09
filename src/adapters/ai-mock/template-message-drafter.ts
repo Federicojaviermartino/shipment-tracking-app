@@ -5,6 +5,7 @@ import type {
   MessageDrafter,
   Moment,
 } from "@/application/ports/message-drafter";
+import { days, lowerFirst, spelled, upperFirst } from "@/application/text/format";
 import { DOCUMENT_LABEL, MILESTONE_LABEL } from "@/domain/labels";
 import type { DocumentType } from "@/domain/shipment";
 import {
@@ -48,30 +49,12 @@ function sheetOf(facts: DraftFacts): Sheet {
   };
 }
 
-const NUMBER_WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight"];
-
-function spelled(count: number): string {
-  return NUMBER_WORDS[count] ?? String(count);
-}
-
-function days(count: number): string {
-  return `${spelled(count)} day${count === 1 ? "" : "s"}`;
-}
-
 function moment(value: Moment): string {
   return formatStamp(value.at, value.precision, value.zone);
 }
 
 function dayOf(value: Moment): LocalDate {
   return localDate(value.at, value.zone);
-}
-
-function lowerFirst(text: string): string {
-  return text.charAt(0).toLowerCase() + text.slice(1);
-}
-
-function upperFirst(text: string): string {
-  return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
 /** "Customs found X; a corrected invoice is required." says what happened before the semicolon. */
@@ -214,8 +197,10 @@ function customerHold(request: DraftRequest, sheet: Sheet): Omit<DraftText, "fac
   const estela = sheet.use("estelaDoor");
 
   if (hold.kind === "customs") {
-    const document = sheet.use("document");
-    const word = document ? documentWord(document.docType) : "document";
+    // A hold is "a document check" only when the record names the document customs wants.
+    // Otherwise the notice says what was reported and that we are finding out what is needed.
+    const document = sheet.facts.document?.corrected ? sheet.use("document") : null;
+    const word = document ? documentWord(document.docType) : null;
     const release = estela?.assumedRelease
       ? relativeDay(estela.assumedRelease, sheet.use("today"))
       : "soon";
@@ -224,17 +209,21 @@ function customerHold(request: DraftRequest, sheet: Sheet): Omit<DraftText, "fac
         ? `delivery in ${shipment.destination} stays on ${formatDay(estela.day)}`
         : estela && `we estimate delivery in ${shipment.destination} on ${formatDay(estela.day)}`;
     return {
-      subject: `${order}: held at ${hold.place ? `${hold.place} ` : ""}customs for a document check`,
+      subject: `${order}: held at ${hold.place ? `${hold.place} ` : ""}customs${document ? " for a document check" : ""}`,
       body: join([
         `${finding(hold.reason)}.`,
         document &&
           (document.sentOn
             ? `We sent a corrected ${word} to the broker ${relativeDay(document.sentOn, sheet.use("today"))}.`
             : `We are preparing a corrected ${word} for the broker.`),
+        !document &&
+          `${sheet.use("operatorContacted") ? "We have asked" : "We are asking"} our forwarder what customs needs to release the shipment.`,
         outlook &&
           `If customs releases the shipment ${release}, ${outlook}; we will confirm as soon as we hear.`,
         shipment.consigneeClearsImport &&
-          `Your broker may be asked to present the corrected ${word}.`,
+          (document
+            ? `Your broker may be asked to present the corrected ${word}.`
+            : "As the importer, your broker may hear from customs about this hold."),
       ]),
     };
   }
@@ -266,7 +255,7 @@ function operatorMessage(request: DraftRequest, sheet: Sheet): Omit<DraftText, "
     const document = sheet.use("document");
     const label = document ? DOCUMENT_LABEL[document.docType].toLowerCase() : "document";
     const attached = document ? ` (${document.fileName})` : "";
-    if (hold) {
+    if (hold && document?.corrected) {
       const deadline = sheet.use("deadline");
       return {
         subject: `${reference}: corrected ${label}`,
@@ -280,7 +269,9 @@ function operatorMessage(request: DraftRequest, sheet: Sheet): Omit<DraftText, "
       };
     }
     const gateIn = sheet.use("gateIn");
-    const deadline = sheet.use("deadline");
+    // A cut-off that has passed is not a deadline to ask for any more.
+    const ahead = (sheet.facts.deadline?.at.at ?? 0) > request.now;
+    const deadline = ahead ? sheet.use("deadline") : null;
     const container = shipment.container ? `Container ${shipment.container}` : "The container";
     return {
       subject: `${reference}: ${label} for export clearance`,
@@ -291,6 +282,19 @@ function operatorMessage(request: DraftRequest, sheet: Sheet): Omit<DraftText, "
         deadline
           ? `Please lodge the export declaration before the cut-off on ${moment(deadline.at)}${shipment.vessel ? ` for ${shipment.vessel}` : ""}.`
           : "Please lodge the export declaration as soon as possible.",
+      ]),
+    };
+  }
+
+  if (request.exception === "customs_hold" && hold?.kind === "customs") {
+    const deadline = sheet.use("deadline");
+    return {
+      subject: `${reference}: what does customs need?`,
+      body: join([
+        opening,
+        `Your message of ${moment(hold.since)} reports a customs hold: ${lowerFirst(hold.reason)}`,
+        "Please tell us what customs needs to release the shipment, and whether any document is wanted from us.",
+        deadline && `Free time at the terminal ends on ${formatDay(dayOf(deadline.at))}.`,
       ]),
     };
   }

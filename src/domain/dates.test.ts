@@ -120,6 +120,12 @@ describe("a superseded operator estimate", () => {
     expect(result.operator?.superseded).toBe(false);
   });
 
+  test("stands when the change leaves Estela's door day before it: only a later date overrules an operator", () => {
+    const result = dates([...atSea, vesselDelayed], estelaEstimate("2026-10-13"));
+    expect(result.operator).toMatchObject({ day: "2026-10-14", superseded: false });
+    expect(result.best).toMatchObject({ day: "2026-10-14", basis: "operator_estimate" });
+  });
+
   test("stands when Estela disagrees but nothing upstream changed since it was declared", () => {
     const result = dates(atSea, estelaEstimate("2026-10-16"));
     expect(result.operator?.superseded).toBe(false);
@@ -258,5 +264,53 @@ describe("the published date: what the customer currently sees", () => {
   test("nothing to say and no estimate: there is no best door day at all", () => {
     expect(dates(sailed, null).best).toBeNull();
     expect(dates(sailed, { withheld: true, reason: "stale" }).best).toBeNull();
+  });
+});
+
+describe("a door day that is over, with nothing delivered", () => {
+  const lastHourOfTheDay = at("2026-10-14 23:30", MEXICO);
+  const theDayAfter = at("2026-10-15 00:30", MEXICO);
+
+  test("the operator's estimate stands through its own day at the destination", () => {
+    const result = dates(atSea, estelaEstimate("2026-10-14"), lastHourOfTheDay);
+    expect(result.best).toEqual(snapshot("2026-10-14", "operator_estimate"));
+    expect(result.published).toMatchObject({ kind: "estimated", day: "2026-10-14" });
+  });
+
+  test("once that day is over it is still shown as declared, but it is not the best date: Estela's is", () => {
+    const result = dates(atSea, estelaEstimate("2026-10-15"), theDayAfter);
+    expect(result.operator).toMatchObject({ day: "2026-10-14", superseded: false });
+    expect(result.best).toEqual(snapshot("2026-10-15", "estela_estimate"));
+  });
+
+  test("with no estimate to replace it, there is no best date at all", () => {
+    expect(dates(atSea, null, theDayAfter).best).toBeNull();
+    expect(dates(atSea, { withheld: true, reason: "stale" }, theDayAfter).best).toBeNull();
+  });
+
+  test("the customer reads a date under review, carrying the day that was missed", () => {
+    expect(dates(atSea, estelaEstimate("2026-10-15"), theDayAfter).published).toEqual({
+      kind: "under_review",
+      was: { day: "2026-10-14", reason: "missed" },
+    });
+  });
+
+  test("a date that a notice gave is under review just the same once it is over", () => {
+    const sent = noticeSent(
+      ocean,
+      at("2026-10-07 16:20"),
+      snapshot("2026-10-14", "operator_estimate"),
+    );
+    const result = dates([...atSea, sent], estelaEstimate("2026-10-15"), theDayAfter);
+    expect(result.published).toEqual({
+      kind: "under_review",
+      was: { day: "2026-10-14", reason: "missed" },
+    });
+  });
+
+  test("a delivery confirmed on a later day is simply the confirmed date", () => {
+    const delivered = confirmed(ocean, "DELIVERED", at("2026-10-16 11:00", MEXICO));
+    const result = dates([...atSea, delivered], null, at("2026-10-16 12:00", MEXICO));
+    expect(result.published).toMatchObject({ kind: "confirmed", day: "2026-10-16" });
   });
 });

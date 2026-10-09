@@ -1,7 +1,8 @@
 import type { Batch, EventStore, Unprocessed, Unsubscribe } from "@/application/ports/event-store";
 import type { LoggedEvent, RawMessage } from "@/domain/log";
 import { HOUR } from "@/domain/time";
-import { LogState, type LogContents } from "./log-state";
+import { LogState } from "./log-state";
+import { parseSession, SESSION_VERSION, type StoredSession } from "./stored-session";
 
 /** The calls of the Web Storage API the store needs: injected, so a test can stand in for it. */
 export type KeyValueStorage = Pick<Storage, "getItem" | "setItem">;
@@ -18,23 +19,13 @@ export type BrowserEventStoreOptions = {
   key?: string;
 };
 
-/** Bumped whenever the shape of a logged event changes: an older session is then discarded. */
-export const SESSION_VERSION = 1;
 export const MAX_SESSION_AGE = 6 * HOUR;
 export const DEFAULT_SESSION_KEY = "estela.session";
 
-type Session = LogContents & { version: number; startedAt: number };
-
-function isSession(value: unknown): value is Session {
-  if (typeof value !== "object" || value === null) return false;
-  const record = value as Record<string, unknown>;
-  return (
-    typeof record.version === "number" &&
-    typeof record.startedAt === "number" &&
-    Array.isArray(record.raws) &&
-    Array.isArray(record.events) &&
-    Array.isArray(record.unprocessed)
-  );
+/** Asked once, when a tab loads: neither expired nor dated after the clock that reads it. */
+function isCurrent(session: StoredSession, now: number): boolean {
+  const age = now - session.startedAt;
+  return age >= 0 && age <= MAX_SESSION_AGE;
 }
 
 /**
@@ -43,6 +34,9 @@ function isSession(value: unknown): value is Session {
  * storage under one key, together with the real time the session started. Another tab that
  * writes the key is heard through `onExternalChange`, so operations and the portal can sit side
  * by side and a reload does not lose the demo.
+ *
+ * A session expires for a tab that loads it, never for a tab that is living in it: whatever is
+ * decided in a window left open overnight belongs with everything else that window shows.
  */
 export class BrowserEventStore implements EventStore {
   private readonly log = new LogState();
@@ -53,7 +47,9 @@ export class BrowserEventStore implements EventStore {
   constructor(private readonly options: BrowserEventStoreOptions) {
     this.key = options.key ?? DEFAULT_SESSION_KEY;
     this.startedAt = options.wallClock();
-    this.pull();
+    const stored = this.read();
+    if (stored && isCurrent(stored, this.startedAt)) this.adopt(stored);
+    else this.startSession();
     options.onExternalChange((key) => {
       if (key !== null && key !== this.key) return;
       if (this.pull()) this.notify();
@@ -83,10 +79,10 @@ export class BrowserEventStore implements EventStore {
 
   append(batch: Batch): void {
     // Another tab may have appended since the last notification reached this one.
-    this.pull();
-    if (!this.log.append(batch)) return;
-    this.push();
-    this.notify();
+    const pulled = this.pull();
+    const added = this.log.append(batch);
+    if (added) this.push();
+    if (pulled || added) this.notify();
   }
 
   subscribe(listener: () => void): Unsubscribe {
@@ -110,35 +106,31 @@ export class BrowserEventStore implements EventStore {
 
   /**
    * Takes over what storage holds and says whether that changed anything here: the log, or the
-   * session itself. A missing, unreadable, outdated or expired session starts anew.
+   * session itself. A missing or unreadable session starts anew.
    */
   private pull(): boolean {
-    const session = this.read();
-    if (!session) {
-      this.startSession();
-      return true;
-    }
+    const stored = this.read();
+    if (stored) return this.adopt(stored);
+    this.startSession();
+    return true;
+  }
+
+  private adopt(session: StoredSession): boolean {
     const restarted = session.startedAt !== this.startedAt;
     this.startedAt = session.startedAt;
     return this.log.replaceAppended(session) || restarted;
   }
 
-  private read(): Session | null {
-    let parsed: unknown;
+  private read(): StoredSession | null {
     try {
-      const stored = this.options.storage.getItem(this.key);
-      if (stored === null) return null;
-      parsed = JSON.parse(stored);
+      return parseSession(this.options.storage.getItem(this.key));
     } catch {
       return null;
     }
-    if (!isSession(parsed) || parsed.version !== SESSION_VERSION) return null;
-    const age = this.options.wallClock() - parsed.startedAt;
-    return age >= 0 && age <= MAX_SESSION_AGE ? parsed : null;
   }
 
   private push(): void {
-    const session: Session = {
+    const session: StoredSession = {
       version: SESSION_VERSION,
       startedAt: this.startedAt,
       ...this.log.appendedContents(),

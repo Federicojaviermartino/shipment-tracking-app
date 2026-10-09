@@ -61,13 +61,16 @@ function read(text: string): TextReading | null {
     };
   }
 
-  const requirement = CORRECTED_INVOICE.test(flat) ? "; a corrected invoice is required" : "";
+  // What customs asks for is read as data as well as words: the playbook proposes sending a
+  // document only when the message names one.
+  const invoiceAsked = CORRECTED_INVOICE.test(flat);
   return {
     observation: {
       type: "hold",
       hold: "customs",
       state: "raised",
-      reason: `${customsFinding(flat)}${requirement}.`,
+      reason: `${customsFinding(flat)}${invoiceAsked ? "; a corrected invoice is required" : ""}.`,
+      ...(invoiceAsked ? { requires: "commercial_invoice" as const } : {}),
     },
     rule: "pattern:customs hold",
   };

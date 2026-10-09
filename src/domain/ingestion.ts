@@ -34,7 +34,13 @@ export type Observation =
       remark?: string;
     }
   | { type: "estimate_withdrawn"; code: MilestoneCode; place?: Place; remark?: string }
-  | { type: "hold"; hold: HoldKind; state: "raised" | "cleared"; reason: string }
+  | {
+      type: "hold";
+      hold: HoldKind;
+      state: "raised" | "cleared";
+      reason: string;
+      requires?: DocumentType;
+    }
   | { type: "position"; place: string }
   | { type: "note"; text: string }
   | { type: "document"; docType: DocumentType };

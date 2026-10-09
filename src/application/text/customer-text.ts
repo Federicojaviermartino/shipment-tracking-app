@@ -1,11 +1,10 @@
 import { assertNever } from "@/domain/assert-never";
 import type { CustomerPublished, CustomerView } from "@/domain/customer-view";
-import { HOLD_LABEL, STAGE_LABEL } from "@/domain/labels";
-import type { Shipment } from "@/domain/shipment";
+import { HOLD_LABEL, plural, STAGE_LABEL } from "@/domain/labels";
 import { diffDays, formatDay, type LocalDate, type Zone } from "@/domain/time";
 import { userName, type Directory } from "../directory";
 import type { CustomerSeesView, PublishedView } from "../views";
-import { days, plural } from "./format";
+import { days } from "./format";
 
 /**
  * The words a customer reads. Fixed wording for facts, no operator text, and no claim that the
@@ -99,17 +98,13 @@ export function differenceLine(committed: LocalDate, published: CustomerPublishe
   return "on the committed date";
 }
 
-function clearsImport(shipment: Shipment): boolean {
-  return shipment.sections.some((section) => section.kind === "port" && section.gate === "import");
-}
-
-/**
- * Under DAP and CPT the buyer clears import wherever there is a border to clear: Estela says so
- * instead of ever suggesting that an import matter needs nothing from the consignee.
- */
-export function incotermLine(shipment: Shipment, audience: "ops" | "customer"): string {
-  const term = `${shipment.incoterm.code} ${shipment.incoterm.place}`;
-  if (!clearsImport(shipment)) return term;
+/** Says who clears import instead of ever suggesting that it needs nothing from the consignee. */
+export function incotermLine(
+  incoterm: CustomerView["identifiers"]["incoterm"],
+  audience: "ops" | "customer",
+): string {
+  const term = `${incoterm.code} ${incoterm.place}`;
+  if (!incoterm.consigneeClearsImport) return term;
   return `${term}: ${audience === "ops" ? "the consignee clears import" : "you clear import"}`;
 }
 

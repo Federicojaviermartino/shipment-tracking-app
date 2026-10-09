@@ -23,8 +23,8 @@ const transportSchema = z.object({
   transportEventTypeCode: z.string().min(1),
   vesselName: z.string().min(1),
   carrierVoyageNumber: z.string().min(1),
-  delayReasonCode: z.string().optional(),
-  changeRemark: z.string().optional(),
+  delayReasonCode: z.string().nullish(),
+  changeRemark: z.string().nullish(),
   ...common,
 });
 
@@ -82,7 +82,9 @@ function readTransport(event: TransportEvent): ParsedItem[] {
   const port = NORAY_PORTS[event.UNLocationCode];
   const rule = NORAY_TRANSPORT.find(
     (row) =>
-      row.code === event.transportEventTypeCode && row.classifier === event.eventClassifierCode,
+      row.code === event.transportEventTypeCode &&
+      row.classifier === event.eventClassifierCode &&
+      row.role === port?.role,
   );
   if (!port || !rule) {
     const what = `${event.transportEventTypeCode} ${event.eventClassifierCode}`;

@@ -30,13 +30,19 @@ export const NORAY_EQUIPMENT: {
   { code: "GTOT", role: "destination", milestone: "GATE_OUT" },
 ];
 
-/** Vessel events carry vessel and voyage, never a container: they are shared by every box aboard. */
+/**
+ * Vessel events carry vessel and voyage, never a container: they are shared by every box aboard.
+ * A vessel arrives and departs at both ends of a voyage, so these are keyed on the port too: the
+ * departure that counts is the one from the port of loading, the arrival the one at the port of
+ * discharge.
+ */
 export const NORAY_TRANSPORT: {
   code: string;
   classifier: "ACT" | "EST";
+  role: "origin" | "destination";
   milestone: MilestoneCode;
 }[] = [
-  { code: "DEPA", classifier: "ACT", milestone: "VESSEL_DEPARTED" },
-  { code: "ARRI", classifier: "ACT", milestone: "VESSEL_ARRIVED" },
-  { code: "ARRI", classifier: "EST", milestone: "VESSEL_ARRIVED" },
+  { code: "DEPA", classifier: "ACT", role: "origin", milestone: "VESSEL_DEPARTED" },
+  { code: "ARRI", classifier: "ACT", role: "destination", milestone: "VESSEL_ARRIVED" },
+  { code: "ARRI", classifier: "EST", role: "destination", milestone: "VESSEL_ARRIVED" },
 ];

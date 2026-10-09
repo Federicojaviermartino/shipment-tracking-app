@@ -104,8 +104,7 @@ describe("stage: where the cargo physically is", () => {
 });
 
 describe("the import gate has its own state", () => {
-  const gate = (events: LoggedEvent[], factsOnly = false) =>
-    importGateOf(buildTimeline(ocean, events), { factsOnly })?.state;
+  const gate = (events: LoggedEvent[]) => importGateOf(buildTimeline(ocean, events))?.state;
 
   test("goes from not lodged to lodged to released", () => {
     expect(gate(upTo("DISCHARGED"))).toBe("not_lodged");
@@ -120,12 +119,25 @@ describe("the import gate has its own state", () => {
     expect(gate([...upTo("IMPORT_LODGED"), raised, cleared])).toBe("lodged");
   });
 
-  test("an unconfirmed reading holds the gate for operations only", () => {
+  test("a reading holds the gate from the moment it is read: operations see it before anyone confirms it", () => {
     const read = hold(ocean, "customs", "raised", at("2026-10-12 17:55"), { reading: AI_READING });
     const log = [...upTo("IMPORT_LODGED"), read];
     expect(gate(log)).toBe("held");
-    expect(gate(log, true)).toBe("lodged");
-    expect(gate([...log, reviewed(read, true, at("2026-10-12 18:10"))], true)).toBe("held");
+    expect(gate([...log, reviewed(read, false, at("2026-10-12 18:10"))])).toBe("lodged");
+  });
+
+  test("a hold at the destination port is an import hold even when the sailing was never reported", () => {
+    const withoutDeparture = upTo("IMPORT_LODGED").filter(
+      (event) =>
+        !(
+          event.kind === "operator" &&
+          event.fact.type === "milestone" &&
+          event.fact.code === "VESSEL_DEPARTED"
+        ),
+    );
+    const raised = hold(ocean, "customs", "raised", at("2026-10-12 17:55"));
+    expect(stageAfter(withoutDeparture)).toBe("at_destination_port");
+    expect(gate([...withoutDeparture, raised])).toBe("held");
   });
 
   test("a customs hold before the vessel sails is not about the import gate", () => {

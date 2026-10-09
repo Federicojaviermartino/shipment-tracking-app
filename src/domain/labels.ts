@@ -2,6 +2,11 @@ import type { Health } from "./exceptions";
 import type { DocumentType, HoldKind, MilestoneCode } from "./shipment";
 import type { Stage } from "./stage";
 
+/** A count with its noun: "1 day", "2 days". */
+export function plural(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
 /** One vocabulary for code, screens and documents. */
 export const MILESTONE_LABEL: Record<MilestoneCode, string> = {
   BOOKED: "Booked",
@@ -55,15 +60,3 @@ export const DOCUMENT_LABEL: Record<DocumentType, string> = {
   delivery_note: "Delivery note",
   proof_of_delivery: "Proof of delivery",
 };
-
-/** Operations name the model; customers read one word for any estimate that reached them. */
-export const PROVENANCE_LABEL = {
-  ops: {
-    confirmed: "Confirmed",
-    declared: "Operator estimate",
-    estimated: "Estela estimate",
-    planned: "Planned",
-    committed: "Committed",
-  },
-  customer: { confirmed: "Confirmed", estimated: "Estimated", planned: "Planned" },
-} as const;

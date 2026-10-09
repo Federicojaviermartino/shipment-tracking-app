@@ -1,4 +1,9 @@
+import { patternTextInterpreter } from "@/adapters/ai-mock/pattern-text-interpreter";
+import { OPERATOR_ADAPTERS } from "@/adapters/operators";
+import { createIngestion } from "@/application/ingestion";
+import type { RawMessage } from "@/domain/log";
 import type { ExternalActor, InternalActor } from "@/domain/perimeter";
+import { SHIPMENTS } from "@/fixtures";
 import { createTestEstela } from "./create-estela";
 
 /**
@@ -20,8 +25,23 @@ export async function startEstela(options: Parameters<typeof createTestEstela>[0
     return actor;
   };
 
+  const ingestion = createIngestion({
+    shipments: SHIPMENTS,
+    adapters: OPERATOR_ADAPTERS,
+    interpreter: options.ai?.textInterpreter ?? patternTextInterpreter,
+    store: world.store,
+  });
+  let received = 0;
+
   return {
     ...world,
+    /** An operator message the demo does not script, taken in now as a live one would be. */
+    async receive(message: Pick<RawMessage, "operatorId" | "channel" | "body">): Promise<void> {
+      received += 1;
+      await ingestion.ingest([
+        { ...message, id: `test-message-${received}`, receivedAt: world.clock.now() },
+      ]);
+    },
     /** Logistics lead: every site, every account. */
     marta: internal("marta.soler"),
     /** Logistics, the Abadiño plant only. */

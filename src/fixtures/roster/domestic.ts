@@ -147,7 +147,8 @@ export const DOMESTIC_SHIPMENTS: SeededShipment[] = [
     actual: { booked: "2026-10-05 09:50", pickedUp: "2026-10-06 17:00" },
   }),
   // Collected on the eve of a long weekend: Friday is a holiday in Valencia and Monday in all of
-  // Spain, so the goods wait at the Almería platform and the committed day is the Tuesday.
+  // Spain, so the goods wait at the Valencia platform, which is the closed one, are trunked on
+  // Monday night and reach Almería on the committed Tuesday.
   domesticShipment({
     id: "EST-4147",
     orderRef: "20574",
@@ -160,7 +161,7 @@ export const DOMESTIC_SHIPMENTS: SeededShipment[] = [
     plan: {
       booked: "2026-10-06 10:00",
       pickedUp: "2026-10-08 16:00",
-      hubIn: "2026-10-09 05:00",
+      hubIn: "2026-10-13 05:00",
       outForDelivery: "2026-10-13 08:00",
       delivered: "2026-10-13 12:00",
     },

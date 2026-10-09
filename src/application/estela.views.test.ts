@@ -269,6 +269,97 @@ describe("the timeline", () => {
   });
 });
 
+describe("a reading that was rejected", () => {
+  async function rejectTheHold() {
+    const world = await startEstela();
+    const { estela, marta, clock } = world;
+    const eventKey = (await estela.ops.shipment(marta, "EST-4012"))?.case?.reading?.eventKey ?? "";
+    clock.advance(5 * MINUTE);
+    await estela.ops.execute(marta, {
+      type: "confirm_reading",
+      shipmentId: "EST-4012",
+      eventKey,
+      accepted: false,
+    });
+    const rejected = async (actor = marta) => {
+      const view = await estela.ops.shipment(actor, "EST-4012");
+      return view ? entries(view).find((entry) => entry.id === `note:${eventKey}`) : undefined;
+    };
+    return { ...world, eventKey, rejected };
+  }
+
+  test("stays in the timeline as a note that says which reading it is and that it can be reviewed again", async () => {
+    const { estela, marta, lucia, eventKey, rejected } = await rejectTheHold();
+    expect((await estela.ops.shipment(marta, "EST-4012"))?.case).toBeNull();
+    expect(await rejected()).toMatchObject({
+      type: "note",
+      status: "ai_rejected",
+      reading: { eventKey, state: "ai_rejected", disabledReason: null },
+    });
+    // Reviewing is a decision of logistics: support reads the same note and the reason.
+    expect(await rejected(lucia)).toMatchObject({
+      reading: { eventKey, disabledReason: "Needs the Logistics role. Ask Marta Soler." },
+    });
+  });
+
+  test("can be confirmed after all: the hold is back as a fact and the demo goes on", async () => {
+    const { estela, marta, clock, eventKey, rejected } = await rejectTheHold();
+    expect(estela.demo.events().find((event) => event.id === "C")?.state).toBe("blocked");
+    expect(await estela.ops.draft(marta, "EST-4012", "send_document")).toBeNull();
+
+    clock.advance(5 * MINUTE);
+    expect(
+      await estela.ops.execute(marta, {
+        type: "confirm_reading",
+        shipmentId: "EST-4012",
+        eventKey,
+        accepted: true,
+      }),
+    ).toMatchObject({ ok: true });
+
+    const view = await estela.ops.shipment(marta, "EST-4012");
+    expect(view).toMatchObject({
+      health: "held",
+      case: { type: "customs_hold", reading: { state: "ai_accepted", reviewedBy: "Marta Soler" } },
+    });
+    expect(await rejected()).toBeUndefined();
+    expect(await estela.ops.draft(marta, "EST-4012", "send_document")).not.toBeNull();
+  });
+
+  test("a reading still waiting for its first review carries its key too, and a plain remark carries none", async () => {
+    // A model that reads a remark, not a hold: the fold shows it as a note until someone reviews it.
+    const { estela, marta, receive, store } = await startEstela({
+      ai: {
+        textInterpreter: {
+          read: () =>
+            Promise.resolve({
+              observation: { type: "note", text: "The agent will call before the inspection" },
+              rule: "stub",
+            }),
+        },
+      },
+    });
+    await receive({
+      operatorId: "TGF",
+      channel: "email",
+      body: [
+        "Asunto: Exp. TGF-26-03301 / OC 48197",
+        "El agente llamará antes del reconocimiento.",
+      ].join("\n"),
+    });
+    const read = store.events().findLast((event) => event.kind === "operator");
+    const view = await estela.ops.shipment(marta, "EST-4033");
+    const notes = view ? entries(view).filter((entry) => entry.type === "note") : [];
+    expect(notes.filter((note) => note.reading !== null)).toMatchObject([
+      {
+        text: "The agent will call before the inspection",
+        status: "ai_pending",
+        reading: { eventKey: read?.kind === "operator" ? read.key : "", state: "ai_pending" },
+      },
+    ]);
+  });
+});
+
 describe("a case", () => {
   test("each evidence line that rests on an event points to its timeline entry", async () => {
     const { estela, marta } = await startEstela();
@@ -385,6 +476,25 @@ describe("a case", () => {
     });
   });
 
+  test("the last update pairs its time with whoever sent it, not with whoever was heard from last", async () => {
+    const world = await startEstela();
+    const lastUpdate = async () =>
+      (await world.estela.ops.shipment(world.marta, "EST-4116"))?.lastUpdate;
+    const before = await lastUpdate();
+    expect(before?.by).toBe("Transportes Cierzo");
+
+    // An email from the forwarder that a model reads and nobody has confirmed: heard, not a fact.
+    world.clock.advance(MINUTE);
+    await world.receive({
+      operatorId: "TGF",
+      channel: "email",
+      body: "Exp. TGF-26-03455: la mercancía queda retenida por la aduana para reconocimiento.",
+    });
+    const pending = await world.estela.ops.shipment(world.marta, "EST-4116");
+    expect(pending?.cases.map((item) => item.type)).toContain("customs_hold");
+    expect(pending?.lastUpdate).toEqual(before);
+  });
+
   test("a view and a filter combine, and the filter runs inside the view", async () => {
     const { estela, marta } = await startEstela();
     const attention = await estela.ops.shipments(marta, {
@@ -484,5 +594,32 @@ describe("commands that are refused", () => {
         body: "   ",
       }),
     ).toMatchObject({ ok: false, reason: "invalid" });
+  });
+
+  test("the date check reads a notice as a person would: a fraction is no date, a wrong weekday is a wrong date", async () => {
+    const { estela, marta } = await startEstela();
+    const notice = {
+      type: "send_notice" as const,
+      shipmentId: "EST-4128",
+      exception: "delay" as const,
+      subject: "Order 20561: delivery moved to Thu 8 Oct",
+      expectedDay: "2026-10-08",
+    };
+    expect(
+      await estela.ops.execute(marta, {
+        ...notice,
+        body: "The carrier now plans delivery in Murcia on Wed 8 Oct.",
+      }),
+    ).toEqual({
+      ok: false,
+      reason: "invalid",
+      message: "This date is not in the shipment record: Wed 8 Oct.",
+    });
+    expect(
+      await estela.ops.execute(marta, {
+        ...notice,
+        body: "The carrier now plans delivery in Murcia on Thu 8 Oct. 3/4 pallets were reloaded; call us 24/7.",
+      }),
+    ).toMatchObject({ ok: true });
   });
 });

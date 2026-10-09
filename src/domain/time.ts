@@ -105,7 +105,8 @@ export function localTime(instant: Instant, zone: Zone): string {
  */
 export function instantAt(date: LocalDate, time: string, zone: Zone): Instant {
   const { year, month, day } = parseDate(date);
-  const match = /^(\d{2}):(\d{2})$/.exec(time);
+  // Only hours and minutes that exist: `Date.UTC` would carry 24:30 over into the next day.
+  const match = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(time);
   if (!match) throw new RangeError(`Not a time of day: "${time}"`);
   const wall = Date.UTC(year, month - 1, day, Number(match[1]), Number(match[2]));
   const guess = wall - offsetAt(wall, zone);

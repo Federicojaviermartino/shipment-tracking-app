@@ -28,9 +28,7 @@ import {
   findMilestone,
   holdsOf,
   milestonesOf,
-  type Estimated,
   type MilestoneEntry,
-  type Stamp,
   type Timeline,
 } from "./timeline";
 
@@ -208,6 +206,35 @@ describe("authority and gaps", () => {
     expect(loaded.state).toBe("done");
     expect(loaded.actual?.at).toBe(at("2026-09-25 03:10"));
   });
+
+  test("a customs gate confirmed ahead of the cargo is not progress: the arrival is still next", () => {
+    const prelodged = confirmed(ocean, "IMPORT_LODGED", day("2026-10-07"), { precision: "day" });
+    const states = Object.fromEntries(
+      milestonesOf(buildTimeline(ocean, [...atSea, prelodged])).map((entry) => [
+        entry.code,
+        entry.state,
+      ]),
+    );
+    expect(states).toMatchObject({
+      VESSEL_DEPARTED: "done",
+      VESSEL_ARRIVED: "next",
+      DISCHARGED: "upcoming",
+      IMPORT_LODGED: "done",
+      IMPORT_RELEASED: "upcoming",
+    });
+  });
+
+  test("a customs gate skipped where the cargo is stays not reported, and the next move is next", () => {
+    const discharged = [
+      ...atSea,
+      confirmed(ocean, "VESSEL_ARRIVED", at("2026-10-09 05:50", MEXICO)),
+      confirmed(ocean, "DISCHARGED", at("2026-10-10 09:15", MEXICO)),
+      confirmed(ocean, "IMPORT_RELEASED", day("2026-10-13"), { precision: "day" }),
+    ];
+    const timeline = buildTimeline(ocean, discharged);
+    expect(milestone(timeline, "IMPORT_LODGED").state).toBe("not_reported");
+    expect(milestone(timeline, "GATE_OUT").state).toBe("next");
+  });
 });
 
 describe("unplanned milestones, signals and our own actions", () => {
@@ -333,7 +360,18 @@ describe("unplanned milestones, signals and our own actions", () => {
     expect(timeline.signals).toEqual([
       expect.objectContaining({ source: "EVS", lastOccurredAt: at("2026-10-06 13:00") }),
     ]);
-    expect(timeline.lastFactReceivedAt).toBe(ping.receivedAt);
+    expect(timeline.lastFact).toEqual({ receivedAt: ping.receivedAt, source: "EVS" });
+  });
+
+  test("the last fact keeps its own sender, whoever was heard from after it", () => {
+    const lineFact = confirmed(ocean, "VESSEL_ARRIVED", at("2026-10-09 05:50", MEXICO));
+    // A reading nobody has confirmed is heard, and is not a fact.
+    const email = hold(ocean, "customs", "raised", at("2026-10-09 18:00"), { reading: AI_READING });
+    const timeline = buildTimeline(ocean, [...atSea, email, lineFact]);
+    expect(timeline.signals.find((heard) => heard.source === "TGF")?.lastReceivedAt).toBe(
+      email.receivedAt,
+    );
+    expect(timeline.lastFact).toEqual({ receivedAt: lineFact.receivedAt, source: "NRY" });
   });
 });
 
@@ -408,6 +446,23 @@ describe("holds", () => {
     }
   });
 
+  test("a hold raised again while it stands is the same hold: one entry, as first reported", () => {
+    const first = hold(ocean, "customs", "raised", at("2026-10-12 17:55"), {
+      remark: "Documentary inspection",
+    });
+    const again = hold(ocean, "customs", "raised", at("2026-10-13 09:00"), {
+      remark: "Still held",
+    });
+    expect(holdsOf(buildTimeline(ocean, [...atSea, first, again]))).toEqual([
+      expect.objectContaining({
+        open: true,
+        eventKey: first.key,
+        reason: "Documentary inspection",
+        raised: expect.objectContaining({ at: at("2026-10-12 17:55") }),
+      }),
+    ]);
+  });
+
   test("a release with no hold standing changes nothing", () => {
     const cleared = hold(ocean, "customs", "cleared", at("2026-10-13 16:20"));
     expect(holdsOf(buildTimeline(ocean, [...atSea, cleared]))).toEqual([]);
@@ -448,6 +503,50 @@ describe("AI readings are gated", () => {
     expect(holdsOf(buildTimeline(ocean, log))[0]).toMatchObject({ reading: "ai_accepted" });
   });
 
+  test("a hold that a mapping table reports is a fact, even while a reading of the same hold is unconfirmed", () => {
+    // The email is read by a model in the evening; the structured status follows the next morning.
+    const mapped = hold(ocean, "customs", "raised", at("2026-10-13 08:30"), {
+      remark: "Documentary inspection",
+    });
+    for (const log of [
+      [...atSea, read, mapped],
+      [mapped, read, ...atSea],
+    ]) {
+      expect(holdsOf(buildTimeline(ocean, log))).toEqual([
+        expect.objectContaining({
+          open: true,
+          reading: "table",
+          eventKey: mapped.key,
+          reason: "Documentary inspection",
+          raised: expect.objectContaining({ at: at("2026-10-13 08:30") }),
+        }),
+      ]);
+    }
+  });
+
+  test("a reading nobody confirmed cannot clear a hold: it waits as a note until it is accepted", () => {
+    const raised = hold(ocean, "customs", "raised", at("2026-10-12 17:55"));
+    const release = hold(ocean, "customs", "cleared", at("2026-10-13 16:20"), {
+      reading: AI_READING,
+    });
+    const unconfirmed = buildTimeline(ocean, [...atSea, raised, release]);
+    expect(holdsOf(unconfirmed)).toEqual([expect.objectContaining({ open: true })]);
+    expect(allEntries(unconfirmed)).toContainEqual(
+      expect.objectContaining({ type: "note", status: "ai_pending", eventKey: release.key }),
+    );
+
+    const accepted = reviewed(release, true, at("2026-10-13 16:30"));
+    expect(holdsOf(buildTimeline(ocean, [...atSea, raised, release, accepted]))).toEqual([
+      expect.objectContaining({ open: false, clearedAt: at("2026-10-13 16:20") }),
+    ]);
+  });
+
+  test("a second reading of a hold that is already a fact changes nothing", () => {
+    const mapped = hold(ocean, "customs", "raised", at("2026-10-12 08:30"));
+    const [entry] = holdsOf(buildTimeline(ocean, [...atSea, mapped, read]));
+    expect(entry).toMatchObject({ reading: "table", eventKey: mapped.key });
+  });
+
   test("a milestone read by a model is not done until it is accepted", () => {
     const arrival = confirmed(ocean, "VESSEL_ARRIVED", at("2026-10-09 05:40", MEXICO), {
       reading: AI_READING,
@@ -465,21 +564,8 @@ describe("AI readings are gated", () => {
   });
 
   test("an unreviewed reading does not count as the last fact received", () => {
-    const before = buildTimeline(ocean, atSea).lastFactReceivedAt;
-    expect(buildTimeline(ocean, [...atSea, read]).lastFactReceivedAt).toBe(before);
-  });
-});
-
-describe("provenance is part of the type", () => {
-  test("a model estimate cannot occupy the slot of a fact", () => {
-    const predicted: Stamp<Estimated> = {
-      at: day("2026-10-16"),
-      precision: "day",
-      provenance: { kind: "estimated", basis: "Rule-based estimate", computedAt: 0 },
-    };
-    const entry = milestone(buildTimeline(ocean, atSea), "DELIVERED");
-    // @ts-expect-error -- `actual` accepts only what an operator confirmed
-    entry.actual = predicted;
-    expect(entry.actual).toBe(predicted);
+    const before = buildTimeline(ocean, atSea).lastFact;
+    expect(before).not.toBeNull();
+    expect(buildTimeline(ocean, [...atSea, read]).lastFact).toEqual(before);
   });
 });

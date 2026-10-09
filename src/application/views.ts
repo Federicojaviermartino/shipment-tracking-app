@@ -1,4 +1,4 @@
-import type { Verdict } from "@/domain/customer-view";
+import type { CustomerPlace, Verdict } from "@/domain/customer-view";
 import type { DocumentStatus } from "@/domain/documents";
 import type { EstimateStepSource } from "@/domain/estimate";
 import type { EvidenceProvenance, ExceptionHealth, Health } from "@/domain/exceptions";
@@ -28,7 +28,8 @@ import type { MilestoneEntry, NoteEntry, ReadingState } from "@/domain/timeline"
  * the destination. Sentences arrive composed, so that no component ever builds one.
  */
 
-export type PlaceView = { name: string; country: Country; zone: Zone };
+/** A place as any screen shows it: the same narrow shape a customer is given. */
+export type PlaceView = CustomerPlace;
 
 /** A moment at a place. A `day` precision value never shows a time of day. */
 export type WhenView = { at: Instant; precision: Precision; zone: Zone };
@@ -38,7 +39,9 @@ export type DateProvenance = "confirmed" | "declared" | "estimated" | "planned";
 
 // --- route strip ---
 
-export type RouteView = {
+type RouteLegView = { mode: "road" | "sea"; problem: ExceptionHealth | null };
+
+type Route<Leg> = {
   /** One more stop than legs: origin, every port, destination. */
   stops: {
     name: string;
@@ -48,14 +51,24 @@ export type RouteView = {
     gate: boolean;
     problem: ExceptionHealth | null;
   }[];
-  legs: { mode: "road" | "sea"; operator: string; problem: ExceptionHealth | null }[];
+  legs: Leg[];
   /** Where the cargo is: waiting at a stop or under way on a leg. `null` once delivered. */
   position: { on: "stop" | "leg"; index: number } | null;
-  /** The position is the last one known and an update is overdue. */
-  stale: boolean;
   /** The route and the position in words. */
   label: string;
 };
+
+/** The route as operations see it: each leg names its operator. */
+export type RouteView = Route<RouteLegView & { operator: string }> & {
+  /** The position is the last one known and an update is overdue. */
+  stale: boolean;
+};
+
+/**
+ * The route as a customer sees it. A leg says how the cargo travels and never with whom, and the
+ * position is never called stale: a customer reads the age of the last update instead.
+ */
+export type CustomerRouteView = Route<RouteLegView>;
 
 // --- the three dates ---
 
@@ -352,6 +365,16 @@ export type TimelineEntryView =
       /** Why something reported as more than a remark is shown as one. */
       status: NoteEntry["status"] | null;
       statusLabel: string | null;
+      /**
+       * For what a model read and nobody confirmed: the event a review is about. A rejection is
+       * not final, so a rejected reading can be reviewed again from its note.
+       */
+      reading: {
+        eventKey: string;
+        state: "ai_pending" | "ai_rejected";
+        /** Why this actor may not review it: "Needs the Logistics role. Ask Marta Soler." */
+        disabledReason: string | null;
+      } | null;
       source: TimelineSourceView;
     }
   | {
@@ -525,7 +548,7 @@ export type PortalCard = {
   /** "3 pump sets · MV 150 pump sets". */
   cargo: string;
   destination: string;
-  route: RouteView;
+  route: CustomerRouteView;
   stage: { code: Stage; label: string };
   verdict: Verdict;
   verdictLabel: string;

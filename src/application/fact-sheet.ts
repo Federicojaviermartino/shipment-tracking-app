@@ -5,7 +5,7 @@ import { DOCUMENT_LABEL, HOLD_LABEL, MILESTONE_LABEL } from "@/domain/labels";
 import { internalEvents, type LoggedEvent } from "@/domain/log";
 import type { Step } from "@/domain/playbook";
 import type { ShipmentProjection } from "@/domain/projection";
-import { originPlace, type DocumentType } from "@/domain/shipment";
+import { deadlineZone, originPlace, type DocumentType } from "@/domain/shipment";
 import { nextExpectation } from "@/domain/staleness";
 import { formatDay, HOUR, isPast, localDate, type LocalDate } from "@/domain/time";
 import {
@@ -19,7 +19,6 @@ import {
 import type { ReadContext } from "./context";
 import { sourceName } from "./directory";
 import type { DraftFacts, Moment } from "./ports/message-drafter";
-import { deadlineBehind } from "./text/case-text";
 import { reportNoun, stamp } from "./text/format";
 import type { FactLine } from "./views";
 
@@ -60,10 +59,15 @@ export function collectFacts(
   const estela = dates.estela && !dates.estela.withheld ? dates.estela : null;
   const planned = deliveryOf(timeline)?.planned;
 
-  const release = estela?.steps.find(
-    (candidate) => candidate.from === "assumption" && /_RELEASED@/.test(candidate.milestoneKey),
-  );
-  const releasePlace = shipment.plan.find((milestone) => milestone.key === release?.milestoneKey);
+  // The day of a customs release the estimate assumes. The plan says what each step is.
+  const assumedRelease =
+    shipment.plan.flatMap((milestone) => {
+      if (milestone.code !== "EXPORT_RELEASED" && milestone.code !== "IMPORT_RELEASED") return [];
+      const assumed = estela?.steps.find(
+        (candidate) => candidate.from === "assumption" && candidate.milestoneKey === milestone.key,
+      );
+      return assumed ? [localDate(assumed.at, milestone.place.zone)] : [];
+    })[0] ?? null;
 
   // The earliest milestone still ahead that an operator has pushed back: the cause upstream.
   const pushed = milestonesOf(timeline).find(
@@ -110,7 +114,7 @@ export function collectFacts(
     .sort((a, b) => a.at - b.at)
     .at(-1);
 
-  const clock = deadlineBehind(shipment, exception);
+  const clock = exception.actBy?.deadline;
   const protectedMilestone = shipment.plan.find((m) => m.key === clock?.milestoneKey);
 
   const documentStep =
@@ -124,7 +128,7 @@ export function collectFacts(
         .sort((a, b) => a.at - b.at)
         .at(-1)
     : undefined;
-  const corrected = exception.type === "customs_hold";
+  const corrected = docType !== undefined && held?.requires === docType;
 
   const gateIn = findMilestone(timeline, "GATE_IN");
   const origin = originPlace(shipment)?.zone ?? DESK_ZONE;
@@ -145,8 +149,7 @@ export function collectFacts(
         ? {
             day: dates.estelaDay,
             assumption: estela.assumption ?? null,
-            assumedRelease:
-              release && releasePlace ? localDate(release.at, releasePlace.place.zone) : null,
+            assumedRelease,
           }
         : null,
     published:
@@ -202,7 +205,7 @@ export function collectFacts(
           at: {
             at: clock.at,
             precision: "minute",
-            zone: protectedMilestone?.place.zone ?? DESK_ZONE,
+            zone: deadlineZone(shipment, clock),
           },
           consequence: clock.consequence ?? null,
           milestone: protectedMilestone

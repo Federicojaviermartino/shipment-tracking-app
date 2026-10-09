@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { OperatorAdapter } from "@/application/ports/operator-adapter";
 import type { Correlation, ParsedItem, ParseResult } from "@/domain/ingestion";
 import { dayInstant } from "@/domain/time";
-import { dataRows, firstIssue, parsed, parseSpanishDate, quarantined } from "../shared";
+import { dataRows, firstIssue, parsed, parseSpanishDate, quarantined, splitRows } from "../shared";
 import { TURIA, TURIA_FILE_REFERENCE, TURIA_HEADER, TURIA_REPORT } from "./mapping";
 
 const rowSchema = z.object({
@@ -144,6 +144,8 @@ function readEmail(body: string): ParseResult {
 
 export const turiaAdapter: OperatorAdapter = {
   operatorId: TURIA,
+  // An email is one text, whatever its lines look like: only the report is a file of rows.
+  rows: (raw) => (raw.channel === "report" ? splitRows(raw.body, TURIA_HEADER) : [raw.body]),
   parse(raw): ParseResult {
     if (raw.channel === "report") return readReport(raw.body);
     if (raw.channel === "email") return readEmail(raw.body);

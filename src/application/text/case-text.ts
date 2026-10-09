@@ -5,8 +5,8 @@ import { DOCUMENT_LABEL } from "@/domain/labels";
 import { canPerform, CAPABILITY_REASON, type Capability, type Step } from "@/domain/playbook";
 import { inScope, type InternalActor } from "@/domain/perimeter";
 import type { ShipmentProjection } from "@/domain/projection";
-import type { Deadline, DocumentType, Shipment } from "@/domain/shipment";
-import { nextExpectation } from "@/domain/staleness";
+import { deadlineZone, type DocumentType, type Shipment } from "@/domain/shipment";
+import { nextExpectation, type Expectation } from "@/domain/staleness";
 import {
   diffDays,
   formatDay,
@@ -15,11 +15,10 @@ import {
   isPast,
   localDate,
   type Instant,
-  type Zone,
 } from "@/domain/time";
 import { milestonesOf, openHolds, physicalProgress, type HoldEntry } from "@/domain/timeline";
 import type { ReadContext } from "../context";
-import { sourceName } from "../directory";
+import { sourceName, type Directory } from "../directory";
 import type { ClockView } from "../views";
 import {
   CHANNEL_WORD,
@@ -53,21 +52,6 @@ function channelWord(context: ReadContext, rawId: string): string {
 function committedPhrase(projection: ShipmentProjection, now: Instant): string {
   const { committed, zone } = projection.dates;
   return `Committed ${relativeDay(committed, localDate(now, zone))}.`;
-}
-
-/**
- * The deadline of the booking that a case's clock points at, when it points at one: "customer
- * not yet told" is a clock with no deadline behind it.
- */
-export function deadlineBehind(
-  shipment: Shipment,
-  exception: ShipmentException,
-): Deadline | undefined {
-  const { actBy } = exception;
-  if (!actBy) return undefined;
-  return shipment.deadlines.find(
-    (deadline) => deadline.at === actBy.at && deadline.label === actBy.label,
-  );
 }
 
 function delayWhy(context: ReadContext, projection: ShipmentProjection): string {
@@ -181,7 +165,7 @@ function cutoffWhy(
   const missing = documents.filter((step) => step.state !== "done");
   const sent = documents.filter((step) => step.state === "done");
 
-  const deadline = deadlineBehind(projection.shipment, exception);
+  const deadline = exception.actBy?.deadline;
   const cost = deadline?.consequence ? ` ${withoutFullStop(deadline.consequence)}.` : "";
   if (missing.length > 0) {
     return `${names(missing)} not on file, so ${who} cannot lodge the export declaration.${cost}`;
@@ -189,17 +173,35 @@ function cutoffWhy(
   return `${names(sent)} sent to ${who}; the export release is not confirmed yet.${cost}`;
 }
 
-function staleWhy(context: ReadContext, projection: ShipmentProjection): string {
-  const expectation = nextExpectation(projection.timeline);
-  if (!expectation) return "An expected update is overdue.";
+/** Completes "No estimate: ..." when the estimator could not be asked or did not answer. */
+export const ESTIMATOR_UNAVAILABLE = "the estimator is unavailable";
+
+/**
+ * The update a shipment owes, as the tail of a sentence: why a case is stale, and why no estimate
+ * is asked for while it is.
+ */
+export function overdueReason(
+  directory: Directory,
+  expectation: Expectation,
+  now: Instant,
+): string {
   const { reason } = expectation;
   if (reason.kind === "telematics_silence") {
-    const hours = Math.floor((context.now - reason.lastSignalAt) / HOUR);
-    return `No position from ${sourceName(context.directory, reason.source)} for ${hours} h on a truck that reports by telematics.`;
+    const hours = Math.floor((now - reason.lastSignalAt) / HOUR);
+    return `no position from ${sourceName(directory, reason.source)} for ${hours} h`;
   }
   const { milestone, expected } = reason;
   const when = formatStamp(expected.at, expected.precision, milestone.place.zone);
-  return `${upperFirst(reportNoun(milestone.code))} at ${milestone.place.name}, expected ${when}, has not been reported.`;
+  return `${reportNoun(milestone.code)} at ${milestone.place.name}, expected ${when}, has not been reported`;
+}
+
+function staleWhy(context: ReadContext, projection: ShipmentProjection): string {
+  const expectation = nextExpectation(projection.timeline);
+  if (!expectation) return "An expected update is overdue.";
+  const overdue = upperFirst(overdueReason(context.directory, expectation, context.now));
+  return expectation.reason.kind === "telematics_silence"
+    ? `${overdue} on a truck that reports by telematics.`
+    : `${overdue}.`;
 }
 
 function documentLabel(docType: DocumentType): string {
@@ -255,7 +257,9 @@ export function caseTitle(
       return "Held: carrier hold";
     case "cutoff_risk": {
       const left = exception.actBy ? exception.actBy.at - context.now : 0;
-      return `At risk: export cut-off in ${timeLeft(left)}`;
+      return left > 0
+        ? `At risk: export cut-off in ${timeLeft(left)}`
+        : "At risk: export cut-off passed";
     }
     case "stale": {
       const reason = nextExpectation(projection.timeline)?.reason;
@@ -282,10 +286,6 @@ export function waitingLine(exception: ShipmentException): string | null {
   return `Your part is done. Waiting on ${on[exception.type]}.`;
 }
 
-function zoneOfDeadline(shipment: Shipment, milestoneKey: string | undefined): Zone {
-  return shipment.plan.find((milestone) => milestone.key === milestoneKey)?.place.zone ?? DESK_ZONE;
-}
-
 /** The clock of a case: the deadline with a promise or money attached, as a desk says it. */
 export function clockOf(
   shipment: Shipment,
@@ -294,12 +294,12 @@ export function clockOf(
 ): ClockView | null {
   const { actBy } = exception;
   if (!actBy) return null;
-  const deadline = deadlineBehind(shipment, exception);
+  const { deadline } = actBy;
   if (!deadline) {
     return { kind: "now", at: actBy.at, zone: DESK_ZONE, label: "Now", detail: actBy.label };
   }
 
-  const zone = zoneOfDeadline(shipment, deadline.milestoneKey);
+  const zone = deadlineZone(shipment, deadline);
   const left = deadline.at - now;
   const detail = `${deadline.label}, ${formatStamp(deadline.at, "minute", zone)}`;
   const base = { kind: deadline.kind, at: deadline.at, zone, detail };
@@ -333,7 +333,8 @@ export function stepText(
     }
     case "send_document": {
       const document = step.docType ? documentLabel(step.docType) : "document";
-      const corrected = exception.type === "customs_hold" ? "corrected " : "";
+      const asked = holdOf(projection, exception)?.requires;
+      const corrected = asked !== undefined && asked === step.docType ? "corrected " : "";
       const short = step.docType === "commercial_invoice" ? "invoice" : document;
       return {
         label: `Send the ${corrected}${document} to ${operator ?? "the forwarder"}`,
@@ -346,7 +347,7 @@ export function stepText(
         carrier_hold: `Ask ${whom} to release what can move and to send photos`,
         predicted_delay: `Ask ${whom} to confirm before alarming the customer`,
         stale: `Ask ${whom} for position and ETA`,
-        customs_hold: `Ask ${whom} for the status of the hold`,
+        customs_hold: `Ask ${whom} what customs needs to release the goods`,
         delay: `Ask ${whom} for the new delivery date`,
         cutoff_risk: `Ask ${whom} to confirm the export clearance`,
       };

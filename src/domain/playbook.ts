@@ -1,8 +1,8 @@
 import { assertNever } from "./assert-never";
 import type { ShipmentDates } from "./dates";
-import { DOCUMENT_LABEL } from "./labels";
 import {
   internalEvents,
+  latestReviews,
   noticesSent,
   type ExceptionType,
   type InternalEvent,
@@ -23,9 +23,11 @@ export type StepKind = "confirm_reading" | "send_document" | "contact_operator" 
 /** The one place where role differs from perimeter. */
 export type Capability = "logistics" | "any_internal";
 
+/** Who may decide whether a model read an operator's message right. */
+export const REVIEW_REQUIRES: Capability = "logistics";
+
 export type Step = {
   kind: StepKind;
-  label: string;
   /** `outdated`: the customer was told a date that is no longer the best one. */
   state: "todo" | "done" | "outdated";
   requires: Capability;
@@ -63,12 +65,6 @@ function doneBy(event: InternalEvent | undefined): Done {
 
 function latest<E extends InternalEvent>(events: E[]): E | undefined {
   return [...events].sort((a, b) => a.at - b.at).at(-1);
-}
-
-function readingConfirmed(events: InternalEvent[], eventKey: string): Done {
-  return doneBy(
-    latest(events.filter((e) => e.type === "reading_reviewed" && e.eventKey === eventKey)),
-  );
 }
 
 function documentSent(
@@ -134,24 +130,22 @@ export function stepsFor(
 ): Step[] {
   const own = internalEvents(events);
   const notify = step(
-    { kind: "notify_customer", label: "Notify the customer", requires: "any_internal" },
+    { kind: "notify_customer", requires: "any_internal" },
     customerTold(events, dates, open.since),
   );
-  const contact = (label: string): Step =>
+  const contact = (operatorId = open.operatorId): Step =>
     step(
       {
         kind: "contact_operator",
-        label,
         requires: "logistics",
-        ...(open.operatorId ? { operatorId: open.operatorId } : {}),
+        ...(operatorId ? { operatorId } : {}),
       },
-      operatorContacted(own, open.operatorId, open.since),
+      operatorContacted(own, operatorId, open.since),
     );
-  const send = (docType: DocumentType, label: string): Step =>
+  const send = (docType: DocumentType): Step =>
     step(
       {
         kind: "send_document",
-        label,
         requires: "logistics",
         docType,
         ...(open.forwarderId ? { operatorId: open.forwarderId } : {}),
@@ -167,35 +161,30 @@ export function stepsFor(
           step(
             {
               kind: "confirm_reading",
-              label: "Confirm what the AI read in the operator's message",
-              requires: "logistics",
+              requires: REVIEW_REQUIRES,
               eventKey: open.hold.eventKey,
             },
-            readingConfirmed(own, open.hold.eventKey),
+            doneBy(latestReviews(events).get(open.hold.eventKey)),
           ),
         );
       }
-      // Under DAP the consignee's broker clears import: our part is the exporter's document.
-      steps.push(
-        send("commercial_invoice", "Send the corrected commercial invoice to the broker"),
-        notify,
-      );
+      // Under DAP the consignee's broker clears import: our part is the exporter's document,
+      // when the hold says which one customs wants. A hold that names none is not assumed to be
+      // about the invoice: the forwarder is asked what customs needs.
+      const wanted = open.hold?.requires;
+      steps.push(wanted ? send(wanted) : contact(open.forwarderId ?? open.operatorId), notify);
       return steps;
     }
     case "carrier_hold":
-      return [contact("Ask the carrier to release what can move and to send photos"), notify];
+      return [contact(), notify];
     case "delay":
       return [notify];
     case "predicted_delay":
-      return open.basis === "inferred"
-        ? [contact("Ask the operator to confirm before alarming the customer"), notify]
-        : [notify];
+      return open.basis === "inferred" ? [contact(), notify] : [notify];
     case "cutoff_risk":
-      return (open.notOnFile ?? []).map((docType) =>
-        send(docType, `Send the ${DOCUMENT_LABEL[docType].toLowerCase()} to the forwarder`),
-      );
+      return (open.notOnFile ?? []).map((docType) => send(docType));
     case "stale":
-      return [contact("Ask the operator for position and ETA")];
+      return [contact()];
     default:
       return assertNever(open.type);
   }

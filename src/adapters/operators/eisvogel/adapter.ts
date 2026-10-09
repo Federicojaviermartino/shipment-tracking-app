@@ -13,10 +13,10 @@ const payloadSchema = z.object({
   statustext: z.string(),
   ort: z.string().min(1),
   zeit: timestamp,
-  eta: timestamp.optional(),
-  lat: z.number().optional(),
-  lon: z.number().optional(),
-  bemerkung: z.string().optional(),
+  eta: timestamp.nullish(),
+  lat: z.number().nullish(),
+  lon: z.number().nullish(),
+  bemerkung: z.string().nullish(),
 });
 
 function isCountry(code: string): code is Country {

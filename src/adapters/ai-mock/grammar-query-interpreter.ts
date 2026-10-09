@@ -3,6 +3,7 @@ import type {
   InterpreterContext,
   QueryInterpreter,
 } from "@/application/ports/query-interpreter";
+import { withoutAccents } from "@/domain/compare";
 import type { Health } from "@/domain/exceptions";
 import type { ShipmentFilter } from "@/domain/filters";
 import type { Country } from "@/domain/shipment";
@@ -21,9 +22,7 @@ type Entry = { phrase: string; apply: Effect };
 const HEALTH_ORDER: Health[] = ["held", "delayed", "at_risk", "stale", "on_time", "delivered"];
 
 function fold(text: string): string {
-  return text
-    .normalize("NFD")
-    .replace(/[̀-ͯ]/g, "")
+  return withoutAccents(text)
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, " ")
     .trim();

@@ -76,9 +76,11 @@ describe("the steps proposed for each exception", () => {
     confirmed(road, "HUB_IN", at("2026-10-06 06:10"), { place: PERPIGNAN }),
   ];
 
-  test("customs hold: send the corrected invoice to the broker, then notify the customer", () => {
-    const held = [...journey(9), hold(ocean, "customs", "raised", at("2026-10-12 17:55"))];
-    const exception = firstCase(ocean, held, null, at("2026-10-13 09:00"));
+  test("customs hold that asks for a document: send it to the broker, then notify the customer", () => {
+    const raised = hold(ocean, "customs", "raised", at("2026-10-12 17:55"), {
+      requires: "commercial_invoice",
+    });
+    const exception = firstCase(ocean, [...journey(9), raised], null, at("2026-10-13 09:00"));
     expect(kinds(exception)).toEqual(["send_document", "notify_customer"]);
     expect(step(exception, "send_document")).toMatchObject({
       docType: "commercial_invoice",
@@ -87,8 +89,24 @@ describe("the steps proposed for each exception", () => {
     });
   });
 
+  test("customs hold that asks for nothing: no document is proposed, the forwarder is asked what customs needs", () => {
+    const raised = hold(ocean, "customs", "raised", at("2026-10-12 17:55"), {
+      remark: "Held for a physical inspection",
+    });
+    const exception = firstCase(ocean, [...journey(9), raised], null, at("2026-10-13 09:00"));
+    expect(kinds(exception)).toEqual(["contact_operator", "notify_customer"]);
+    expect(step(exception, "contact_operator")).toMatchObject({
+      operatorId: "TGF",
+      requires: "logistics",
+      state: "todo",
+    });
+  });
+
   test("customs hold read by a model: confirming the reading comes first", () => {
-    const read = hold(ocean, "customs", "raised", at("2026-10-12 17:55"), { reading: AI_READING });
+    const read = hold(ocean, "customs", "raised", at("2026-10-12 17:55"), {
+      reading: AI_READING,
+      requires: "commercial_invoice",
+    });
     const exception = firstCase(ocean, [...journey(9), read], null, at("2026-10-13 09:00"));
     expect(kinds(exception)).toEqual(["confirm_reading", "send_document", "notify_customer"]);
     expect(step(exception, "confirm_reading")).toMatchObject({ eventKey: read.key, state: "todo" });
@@ -157,7 +175,10 @@ describe("the steps proposed for each exception", () => {
 });
 
 describe("whether a step is done is read from the log", () => {
-  const read = hold(ocean, "customs", "raised", at("2026-10-12 17:55"), { reading: AI_READING });
+  const read = hold(ocean, "customs", "raised", at("2026-10-12 17:55"), {
+    reading: AI_READING,
+    requires: "commercial_invoice",
+  });
   const held = [...journey(9), read];
   const now = at("2026-10-13 12:00");
   const estimate = estelaEstimate("2026-10-16", { assumption: "if the invoice arrives today" });
@@ -350,7 +371,10 @@ describe("role capability", () => {
   });
 
   test("only notifying the customer is open to customer support", () => {
-    const read = hold(ocean, "customs", "raised", at("2026-10-12 17:55"), { reading: AI_READING });
+    const read = hold(ocean, "customs", "raised", at("2026-10-12 17:55"), {
+      reading: AI_READING,
+      requires: "commercial_invoice",
+    });
     const exception = firstCase(ocean, [...journey(9), read], null, at("2026-10-13 09:00"));
     expect(
       Object.fromEntries(exception.steps.map((s) => [s.kind, canPerform(lucia, s.requires)])),

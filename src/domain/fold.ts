@@ -3,11 +3,13 @@ import { compareText } from "./compare";
 import { HOLD_LABEL, MILESTONE_LABEL } from "./labels";
 import {
   internalEvents,
+  latestReviews,
   operatorEvents,
   type Fact,
   type InternalEvent,
   type LoggedEvent,
   type OperatorEvent,
+  type ReadingReviewed,
 } from "./log";
 import {
   isPhysical,
@@ -45,7 +47,7 @@ type Sorted = {
   positions: OperatorEvent[];
   notes: { event: OperatorEvent; status?: NoteEntry["status"] }[];
   signals: Map<Source, Signal>;
-  lastFactReceivedAt: Instant | null;
+  lastFact: OperatorEvent | null;
 };
 
 /** Something that is not in the plan, with the instant that says where in the timeline it goes. */
@@ -71,19 +73,6 @@ function withoutRedeliveries(events: OperatorEvent[]): OperatorEvent[] {
     if (earlier) byKey.set(event.key, event);
   }
   return [...byKey.values()].sort(byOccurrence);
-}
-
-/** What a person decided about each model reading; when reviewed twice, the later review. */
-function reviewsOf(events: readonly LoggedEvent[]): Map<string, boolean> {
-  const latest = new Map<string, { at: Instant; id: string; accepted: boolean }>();
-  for (const event of internalEvents(events)) {
-    if (event.type !== "reading_reviewed") continue;
-    const kept = latest.get(event.eventKey);
-    const later =
-      !kept || event.at > kept.at || (event.at === kept.at && compareText(event.id, kept.id) > 0);
-    if (later) latest.set(event.eventKey, event);
-  }
-  return new Map([...latest].map(([key, review]) => [key, review.accepted]));
 }
 
 function describe(fact: Fact): string {
@@ -181,7 +170,7 @@ function keepLatest(
 function sortEvents(
   shipment: Shipment,
   reported: readonly OperatorEvent[],
-  reviews: ReadonlyMap<string, boolean>,
+  reviews: ReadonlyMap<string, ReadingReviewed>,
 ): Sorted {
   const plan = new Map<string, PlannedMilestone>(shipment.plan.map((m) => [m.key, m]));
   const sorted: Sorted = {
@@ -193,14 +182,14 @@ function sortEvents(
     positions: [],
     notes: [],
     signals: new Map(),
-    lastFactReceivedAt: null,
+    lastFact: null,
   };
 
   const statusOf = (event: OperatorEvent): ReadingStatus => {
     if (event.reading.method === "table") return "table";
-    const accepted = reviews.get(event.key);
-    if (accepted === undefined) return "ai_pending";
-    return accepted ? "ai_accepted" : "ai_rejected";
+    const review = reviews.get(event.key);
+    if (!review) return "ai_pending";
+    return review.accepted ? "ai_accepted" : "ai_rejected";
   };
 
   for (const event of reported) {
@@ -216,11 +205,8 @@ function sortEvents(
       sorted.notes.push({ event, status });
       continue;
     }
-    if (status !== "ai_pending") {
-      sorted.lastFactReceivedAt = Math.max(
-        sorted.lastFactReceivedAt ?? event.receivedAt,
-        event.receivedAt,
-      );
+    if (status !== "ai_pending" && (!sorted.lastFact || byReceipt(sorted.lastFact, event) < 0)) {
+      sorted.lastFact = event;
     }
 
     const { fact } = event;
@@ -271,8 +257,8 @@ function sortEvents(
 
 /**
  * Step two. One entry per planned milestone, in plan order. `actual` is filled only by a
- * confirmation; a milestone that sits before the furthest confirmed one and was never reported
- * stays `not_reported` and never gets a time.
+ * confirmation; a milestone that sits before the furthest one the cargo has reached and was never
+ * reported stays `not_reported` and never gets a time.
  */
 function plannedEntries(shipment: Shipment, sorted: Sorted): MilestoneEntry[] {
   const entries = shipment.plan.map((milestone): MilestoneEntry => {
@@ -325,13 +311,31 @@ function plannedEntries(shipment: Shipment, sorted: Sorted): MilestoneEntry[] {
     return entry;
   });
 
-  const furthestDone = entries.findLastIndex((entry) => entry.actual !== undefined);
+  const reached = furthestReached(entries);
   entries.forEach((entry, index) => {
     if (entry.actual) entry.state = "done";
-    else if (index < furthestDone) entry.state = "not_reported";
-    else if (index === furthestDone + 1) entry.state = "next";
+    else if (index < reached) entry.state = "not_reported";
+    else if (index === reached + 1) entry.state = "next";
   });
   return entries;
+}
+
+/**
+ * The furthest confirmed milestone the cargo has actually got to. A customs gate can be confirmed
+ * ahead of the cargo (an import entry lodged while the vessel is at sea): that is paperwork, and
+ * it must not turn the arrival it runs ahead of into a gap. So the search stops at the first
+ * physical milestone still to come.
+ */
+function furthestReached(entries: readonly MilestoneEntry[]): number {
+  const lastPhysical = entries.findLastIndex(
+    (entry) => entry.actual !== undefined && isPhysical(entry.code),
+  );
+  const nextPhysical = entries.findIndex(
+    (entry, index) => index > lastPhysical && isPhysical(entry.code),
+  );
+  return entries
+    .slice(0, nextPhysical === -1 ? entries.length : nextPhysical)
+    .findLastIndex((entry) => entry.actual !== undefined);
 }
 
 /** A hold is open from the event that raises it to the next one that clears it. */
@@ -342,18 +346,23 @@ function holdEntries(events: Sorted["holds"]): HoldEntry[] {
     if (event.fact.type !== "hold") continue;
     const standing = open.get(event.fact.hold);
     if (event.fact.state === "raised") {
-      if (standing) continue;
+      // An unconfirmed reading only ever proposed the hold: a fact that raises the same kind of
+      // hold takes its place, so that nothing waits on a confirmation it no longer needs.
+      const takesOver = standing?.reading === "ai_pending" && status !== "ai_pending";
+      if (standing && !takesOver) continue;
       const entry: HoldEntry = {
         type: "hold",
         hold: event.fact.hold,
         open: true,
         reason: event.fact.reason,
+        ...(event.fact.requires ? { requires: event.fact.requires } : {}),
         raised: declaredStamp(event, event.occurredAt, event.precision),
         reading: status,
         eventKey: event.key,
       };
       open.set(event.fact.hold, entry);
-      entries.push(entry);
+      if (standing) entries[entries.indexOf(standing)] = entry;
+      else entries.push(entry);
     } else if (standing) {
       standing.open = false;
       standing.clearedAt = event.occurredAt;
@@ -531,7 +540,7 @@ function layOut(
  */
 export function buildTimeline(shipment: Shipment, events: readonly LoggedEvent[]): Timeline {
   const own = events.filter((event) => event.shipmentId === shipment.id);
-  const sorted = sortEvents(shipment, withoutRedeliveries(operatorEvents(own)), reviewsOf(own));
+  const sorted = sortEvents(shipment, withoutRedeliveries(operatorEvents(own)), latestReviews(own));
   const planned = plannedEntries(shipment, sorted);
   const extras = extrasOf(sorted, internalEvents(own));
 
@@ -539,6 +548,8 @@ export function buildTimeline(shipment: Shipment, events: readonly LoggedEvent[]
     shipmentId: shipment.id,
     ...layOut(shipment, planned, extras, sorted.positions),
     signals: [...sorted.signals.values()].sort((a, b) => compareText(a.source, b.source)),
-    lastFactReceivedAt: sorted.lastFactReceivedAt,
+    lastFact: sorted.lastFact
+      ? { receivedAt: sorted.lastFact.receivedAt, source: sorted.lastFact.source }
+      : null,
   };
 }

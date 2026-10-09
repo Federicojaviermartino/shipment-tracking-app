@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { applyFilter, resolveDue, type FilterableRow, type ShipmentFilter } from "./filters";
-import { at, MEXICO, oceanShipment, roadShipment } from "./test-support";
+import { at, oceanShipment, roadShipment } from "./test-support";
 
 /** Wednesday 7 October 2026, 16:00 in Madrid. */
 const NOW = at("2026-10-07 16:00");
@@ -127,13 +127,5 @@ describe("due, resolved from now", () => {
     const mondayMorning = at("2026-10-12 00:30");
     expect(resolveDue("this_week", sundayNight).to).toBe("2026-10-11");
     expect(resolveDue("this_week", mondayMorning).from).toBe("2026-10-12");
-  });
-
-  test("another zone can be asked for explicitly", () => {
-    const earlyMonday = at("2026-10-12 00:30");
-    expect(resolveDue("today", earlyMonday, MEXICO)).toEqual({
-      from: "2026-10-11",
-      to: "2026-10-11",
-    });
   });
 });

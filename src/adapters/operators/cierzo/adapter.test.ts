@@ -78,6 +78,16 @@ describe("Cierzo: the mapping table", () => {
     ]);
   });
 
+  test("a semicolon inside the remark, the last column, is part of the remark", () => {
+    const parsed = items(
+      "CRZ-2291310;40;ENTREGADO;SEVILLA;07/10/2026 12:05;FIRMADO: ALMACÉN; SIN RESERVAS",
+    );
+    expect(parsed.map((item) => item.kind === "observation" && item.observation)).toEqual([
+      { type: "milestone", code: "DELIVERED", place: spain("Sevilla") },
+      { type: "note", text: "FIRMADO: ALMACÉN; SIN RESERVAS" },
+    ]);
+  });
+
   test("writes a plaza as a place name", () => {
     const place = (plaza: string) => {
       const [item] = items(`CRZ-1;10;RECOGIDA EFECTUADA;${plaza};05/10/2026 17:20;`);
@@ -150,6 +160,23 @@ describe("Cierzo: what a 50 INCIDENCIA means depends on its remark", () => {
     expect(item).toMatchObject({ observation: { at: dayInstant("2027-01-02") } });
   });
 
+  test("a new delivery day already behind the incident is not next year's: a note", () => {
+    const remark = "NUEVA ENTREGA PREVISTA 05/10";
+    expect(items(`CRZ-2291188;50;INCIDENCIA;ZARAGOZA;06/10/2026 12:10;${remark}`)).toEqual([
+      expect.objectContaining({ observation: { type: "note", text: remark } }),
+    ]);
+  });
+
+  test("goods held with a new delivery day: the hold does not swallow the date", () => {
+    const parsed = items(
+      "CRZ-2291188;50;INCIDENCIA;ZARAGOZA;06/10/2026 12:10;MERCANCÍA RETENIDA. NUEVA ENTREGA PREVISTA 09/10",
+    );
+    expect(parsed.map((item) => item.kind === "observation" && item.observation)).toEqual([
+      { type: "hold", hold: "carrier", state: "raised", reason: "Goods held by the carrier" },
+      { type: "estimate", code: "DELIVERED", at: dayInstant("2026-10-09"), precision: "day" },
+    ]);
+  });
+
   test("anything else: a note with the remark kept verbatim", () => {
     const remark = "AVERÍA VEHÍCULO TRACTOR A-23. MERCANCÍA SIN DAÑOS";
     expect(items(`CRZ-2291188;50;INCIDENCIA;TERUEL;06/10/2026 02:50;${remark}`)).toEqual([
@@ -169,6 +196,17 @@ describe("Cierzo: wall-clock times without a zone", () => {
     expect(occurredAt("24/10/2026 15:10")).toBe("2026-10-24T13:10:00.000Z");
     expect(occurredAt("26/10/2026 15:10")).toBe("2026-10-26T14:10:00.000Z");
   });
+
+  test.each(["21/09/2026 24:30", "21/09/2026 23:60", "21/09/2026 99:99"])(
+    "%s is a time of day that does not exist: quarantined, not rolled over into another day",
+    (fecha) => {
+      const row = `CRZ-2290311;10;RECOGIDA EFECTUADA;ZARAGOZA;${fecha};`;
+      expect(cierzoAdapter.parse(message(row))).toEqual({
+        ok: false,
+        reason: `fecha: not a date and time "${fecha}"`,
+      });
+    },
+  );
 });
 
 describe("Cierzo: batch files", () => {
@@ -182,11 +220,23 @@ describe("Cierzo: batch files", () => {
     expect(items(body)).toHaveLength(2);
   });
 
+  test("cuts a file into its rows, each under the header when the file came with one", () => {
+    const header = "expedicion;codigo;estado;plaza;fecha;observaciones";
+    const pickup = "CRZ-2290311;10;RECOGIDA EFECTUADA;ZARAGOZA;21/09/2026 15:10;";
+    const gateIn = "CRZ-2290311;60;ENTRADA EN TERMINAL;VALENCIA;22/09/2026 08:25;";
+    const rows = (...lines: string[]) => cierzoAdapter.rows?.(message(lines.join("\r\n")));
+    expect(rows(header, pickup, "", gateIn, "")).toEqual([
+      `${header}\n${pickup}`,
+      `${header}\n${gateIn}`,
+    ]);
+    expect(rows(pickup, gateIn)).toEqual([pickup, gateIn]);
+    expect(rows(header)).toEqual([]);
+  });
+
   test.each([
     ["an empty body", ""],
     ["only the header", "expedicion;codigo;estado;plaza;fecha;observaciones"],
     ["too few fields", "CRZ-2290311;10;RECOGIDA EFECTUADA;ZARAGOZA"],
-    ["too many fields", "CRZ-2290311;10;RECOGIDA EFECTUADA;ZARAGOZA;21/09/2026 15:10;;;"],
     [
       "a reference that is not Cierzo's",
       "TGF-26-03412;10;RECOGIDA EFECTUADA;ZARAGOZA;21/09/2026 15:10;",

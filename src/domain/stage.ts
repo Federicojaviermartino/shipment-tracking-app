@@ -41,6 +41,16 @@ export function stageOf(timeline: Timeline): Stage {
   return stage;
 }
 
+/**
+ * The vessel has sailed once its departure or anything planned after it is confirmed: a departure
+ * that nobody reported is a gap in the reports, not a vessel still at the quay.
+ */
+export function hasSailed(timeline: Timeline): boolean {
+  const planned = milestonesOf(timeline).filter((entry) => !entry.unplanned);
+  const departure = planned.findIndex((entry) => entry.code === "VESSEL_DEPARTED");
+  return departure !== -1 && planned.slice(departure).some((entry) => entry.actual !== undefined);
+}
+
 export type ImportGateState = "not_lodged" | "lodged" | "held" | "released";
 export type ImportGate = { state: ImportGateState; place: Place };
 
@@ -48,21 +58,15 @@ export type ImportGate = { state: ImportGateState; place: Place };
  * The import gate, for shipments that have one. A customs hold belongs to it once the vessel has
  * sailed: before that, customs can only be holding the export side.
  */
-export function importGateOf(
-  timeline: Timeline,
-  options: { factsOnly?: boolean } = {},
-): ImportGate | null {
+export function importGateOf(timeline: Timeline): ImportGate | null {
   const port = timeline.sections.find(
     ({ section }) => section.kind === "port" && section.gate === "import",
   );
   if (!port || port.section.kind !== "port") return null;
   const place = port.section.place;
 
-  const sailed = findMilestone(timeline, "VESSEL_DEPARTED")?.actual !== undefined;
-  const held = openHolds(timeline).some(
-    (hold) =>
-      hold.hold === "customs" && (!options.factsOnly || hold.reading !== "ai_pending") && sailed,
-  );
+  const sailed = hasSailed(timeline);
+  const held = sailed && openHolds(timeline).some((hold) => hold.hold === "customs");
   if (held) return { state: "held", place };
   if (findMilestone(timeline, "IMPORT_RELEASED")?.actual) return { state: "released", place };
   if (findMilestone(timeline, "IMPORT_LODGED")?.actual) return { state: "lodged", place };

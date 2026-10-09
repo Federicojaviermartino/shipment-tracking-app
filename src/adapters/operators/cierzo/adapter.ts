@@ -2,8 +2,8 @@ import { z } from "zod";
 import type { OperatorAdapter } from "@/application/ports/operator-adapter";
 import type { Correlation, ParsedItem, ParseResult } from "@/domain/ingestion";
 import type { Place } from "@/domain/shipment";
-import { dayInstant, instantAt, localDate, type Instant } from "@/domain/time";
-import { dataRows, firstIssue, parsed, quarantined, toPlaceName } from "../shared";
+import { dayInstant, diffDays, instantAt, localDate, type Instant } from "@/domain/time";
+import { dataRows, firstIssue, parsed, quarantined, splitRows, toPlaceName } from "../shared";
 import {
   CIERZO,
   CIERZO_HEADER,
@@ -36,16 +36,34 @@ function readTime(fecha: string): Instant | null {
   }
 }
 
-/** The remark gives day and month only: it means the first such day on or after the incident. */
+/** How far ahead of the incident a new delivery day may fall and still be read as next year's. */
+const ROLLOVER_DAYS = 60;
+
+/**
+ * The remark gives day and month only: it means the first such day on or after the incident. A
+ * day that would then be most of a year away was already behind when it was keyed, so it is not
+ * read as a date at all.
+ */
 function newDeliveryDay(day: string, month: string, occurredAt: Instant): Instant | null {
   const reported = localDate(occurredAt, CIERZO_ZONE);
   const year = Number(reported.slice(0, 4));
   try {
     const sameYear = `${year}-${month}-${day}`;
-    return dayInstant(sameYear >= reported ? sameYear : `${year + 1}-${month}-${day}`);
+    if (sameYear >= reported) return dayInstant(sameYear);
+    const nextYear = `${year + 1}-${month}-${day}`;
+    return diffDays(reported, nextYear) <= ROLLOVER_DAYS ? dayInstant(nextYear) : null;
   } catch {
     return null;
   }
+}
+
+/** The first hold pattern the remark matches, with the reason it gives. */
+function holdIn(remark: string): { name: string; reason: string } | null {
+  for (const { name, pattern, reason } of CIERZO_HOLD_PATTERNS) {
+    const match = pattern.exec(remark);
+    if (match) return { name, reason: reason(match) };
+  }
+  return null;
 }
 
 function translate(row: Row, occurredAt: Instant): ParsedItem[] {
@@ -91,33 +109,30 @@ function translate(row: Row, occurredAt: Instant): ParsedItem[] {
   }
 
   if (row.codigo === CIERZO_INCIDENT.code) {
-    for (const { name, pattern, reason } of CIERZO_HOLD_PATTERNS) {
-      const match = pattern.exec(remark);
-      if (!match) continue;
-      return [
-        {
-          kind: "observation",
-          ref,
-          observation: { type: "hold", hold: "carrier", state: "raised", reason: reason(match) },
-          ...at,
-          rule: `cierzo:50 INCIDENCIA (${name})`,
-        },
-      ];
-    }
+    // One remark can say both that the goods are held and when they will now be delivered.
+    const hold = holdIn(remark);
     const delivery = CIERZO_NEW_DELIVERY.exec(remark);
     const day = delivery ? newDeliveryDay(delivery[1] ?? "", delivery[2] ?? "", occurredAt) : null;
-    if (day !== null) {
-      return [
-        {
-          kind: "observation",
-          ref,
-          observation: { type: "estimate", code: "DELIVERED", at: day, precision: "day" },
-          ...at,
-          rule: "cierzo:50 INCIDENCIA (new delivery date)",
-        },
-      ];
+    const items: ParsedItem[] = [];
+    if (hold) {
+      items.push({
+        kind: "observation",
+        ref,
+        observation: { type: "hold", hold: "carrier", state: "raised", reason: hold.reason },
+        ...at,
+        rule: `cierzo:50 INCIDENCIA (${hold.name})`,
+      });
     }
-    return [note(remark || row.estado, "cierzo:50 INCIDENCIA (remark)")];
+    if (day !== null) {
+      items.push({
+        kind: "observation",
+        ref,
+        observation: { type: "estimate", code: "DELIVERED", at: day, precision: "day" },
+        ...at,
+        rule: "cierzo:50 INCIDENCIA (new delivery date)",
+      });
+    }
+    return items.length > 0 ? items : [note(remark || row.estado, "cierzo:50 INCIDENCIA (remark)")];
   }
 
   return [note(remark ? `${row.estado}. ${remark}` : row.estado, "cierzo:unmapped code")];
@@ -125,6 +140,7 @@ function translate(row: Row, occurredAt: Instant): ParsedItem[] {
 
 export const cierzoAdapter: OperatorAdapter = {
   operatorId: CIERZO,
+  rows: (raw) => splitRows(raw.body, CIERZO_HEADER),
   parse(raw): ParseResult {
     const rows = dataRows(raw.body, CIERZO_HEADER);
     if (rows.length === 0) return quarantined("no data row");

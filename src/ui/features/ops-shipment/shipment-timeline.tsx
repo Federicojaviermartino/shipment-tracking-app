@@ -1,6 +1,8 @@
-import { Fragment, useId } from "react";
+import { Fragment, type ReactNode, useId } from "react";
 import type { OpsShipmentView, TimelineEntryView } from "@/application/views";
+import type { ShipmentId } from "@/domain/shipment";
 import type { Instant } from "@/domain/time";
+import { ConfirmReadingButton } from "@/ui/features/message-drawer/confirm-reading-button";
 import { Card } from "@/ui/kit/card";
 import { Lane } from "@/ui/kit/lane";
 import { LegTimeline } from "@/ui/kit/leg-timeline";
@@ -24,6 +26,27 @@ function SectionDetail({ text }: { text: string }) {
   });
 }
 
+/**
+ * Rejecting a reading is not final. Its note keeps the operator's message one click away, so
+ * that is where the same reading can be confirmed after all.
+ */
+function reviewAgain(shipmentId: ShipmentId, entry: TimelineEntryView): ReactNode {
+  if (entry.type !== "note" || entry.reading?.state !== "ai_rejected") {
+    return undefined;
+  }
+  return (
+    <ConfirmReadingButton
+      shipmentId={shipmentId}
+      eventKey={entry.reading.eventKey}
+      accepted
+      variant="link"
+      disabledReason={entry.reading.disabledReason ?? undefined}
+    >
+      Confirm after all
+    </ConfirmReadingButton>
+  );
+}
+
 type ShipmentTimelineProps = {
   shipment: OpsShipmentView;
   now: Instant;
@@ -35,10 +58,16 @@ export function ShipmentTimeline({ shipment, now, pointed }: ShipmentTimelinePro
   const titleId = useId();
   const { timeline, dates, route, origin } = shipment;
 
-  const rows = (entries: readonly TimelineEntryView[]) =>
-    timelineRows(entries, { now, dates }).map((row) =>
-      row.id === pointed?.anchor ? { ...row, flashKey: pointed.visits } : row,
+  const rows = (entries: readonly TimelineEntryView[]) => {
+    const actions = new Map(
+      entries.map((entry) => [entryAnchor(entry.id), reviewAgain(shipment.id, entry)]),
     );
+    return timelineRows(entries, { now, dates }).map((row) => ({
+      ...row,
+      action: actions.get(row.id),
+      flashKey: row.id === pointed?.anchor ? pointed.visits : undefined,
+    }));
+  };
   const ruleIn = (sectionId: string | null): TimelineNowData | undefined =>
     timeline.now.sectionId === sectionId
       ? {

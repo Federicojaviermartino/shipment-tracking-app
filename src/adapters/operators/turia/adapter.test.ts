@@ -85,6 +85,15 @@ describe("Turia report: every concepto / estado pair", () => {
     });
   });
 
+  test("a semicolon inside the remark, the last column, is part of the remark", () => {
+    const [estimate] = items(
+      "TGF-26-03412;12345;ENTREGA;ETA;16/10/2026;Atraque previsto 11/10; cierre del puerto",
+    );
+    expect(estimate).toMatchObject({
+      observation: { type: "estimate", remark: "Atraque previsto 11/10; cierre del puerto" },
+    });
+  });
+
   test("ENTREGA / ETA PENDIENTE withdraws the estimate", () => {
     expect(items("TGF-26-03290;48176;ENTREGA;ETA PENDIENTE;;Pendiente de aduana")).toEqual([
       {

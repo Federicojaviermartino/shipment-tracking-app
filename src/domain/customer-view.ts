@@ -1,14 +1,18 @@
 import type { Published, ShipmentDates } from "./dates";
 import type { Health } from "./exceptions";
 import { documentEvents, noticesSent, type LoggedEvent, type PublishedSnapshot } from "./log";
-import type {
-  Country,
-  DocumentType,
-  HoldKind,
-  MilestoneCode,
-  Shipment,
-  ShipmentId,
-  UserId,
+import { routeOf, type RoutePosition, type RouteStop } from "./route";
+import {
+  consigneeClearsImport,
+  type Country,
+  type DocumentType,
+  type HoldKind,
+  type MilestoneCode,
+  type Place,
+  type Shipment,
+  type ShipmentId,
+  type SiteId,
+  type UserId,
 } from "./shipment";
 import { stageOf, type Stage } from "./stage";
 import { milestonesOf, openHolds, type MilestoneEntry, type Timeline } from "./timeline";
@@ -23,8 +27,9 @@ import {
 
 /**
  * What a customer may see, as a type of its own: data minimisation is a narrower shape, not a
- * hidden element. There is no field here for raw payloads, operators' words, notes, positions, hub
- * scans, unconfirmed readings, Estela estimates, exceptions, steps, clocks or internal documents.
+ * hidden element. There is no field here for raw payloads, operators' names or words, notes,
+ * positions, hub scans, unconfirmed readings, Estela estimates, exceptions, steps, clocks or
+ * internal documents.
  */
 
 export type Verdict = "delivered" | "on_hold" | "delayed" | "on_time" | "in_progress";
@@ -70,6 +75,14 @@ export type CustomerPublished =
   | { kind: "planned"; day: LocalDate; at: Instant; precision: Precision }
   | { kind: "under_review"; was?: LocalDate };
 
+/** How the cargo travels and how far it has got: stops and legs, with no carrier on any of them. */
+export type CustomerRoute = {
+  stops: { place: CustomerPlace; role: RouteStop["role"]; gate: RouteStop["gate"] }[];
+  legs: { mode: "road" | "sea" }[];
+  /** `null` once delivered. */
+  position: RoutePosition | null;
+};
+
 export type CustomerNotice = {
   id: string;
   at: Instant;
@@ -82,8 +95,11 @@ export type CustomerNotice = {
 export type CustomerView = {
   shipmentId: ShipmentId;
   orderRef: string;
+  /** Our own site the order ships from. */
+  originSiteId: SiteId;
   consignee: { name: string; place: CustomerPlace };
   cargo: { description: string; packages: string; grossWeightKg: number };
+  route: CustomerRoute;
   stage: Stage;
   verdict: Verdict;
   /** Set when the verdict is `on_hold`. */
@@ -114,7 +130,8 @@ const HOLD_REASON: Record<HoldKind, string> = {
   carrier: "The carrier is holding the shipment.",
 };
 
-function narrowPlace(place: CustomerPlace): CustomerPlace {
+/** A place of the plan carries more than a customer's place has room for (a port's UN/LOCODE). */
+function narrowPlace(place: Place): CustomerPlace {
   return { name: place.name, country: place.country, zone: place.zone };
 }
 
@@ -204,14 +221,16 @@ export function toCustomerView(input: {
     }))
     .reverse();
 
-  // First match wins. "On time" is reachable only with no open exception at all and with a date
-  // to stand behind: no green lie, and no promise next to "date under review".
+  // First match wins. "On time" is reachable only with no open exception at all, with a date to
+  // stand behind and with an estimate that agrees: no green lie, no promise next to "date under
+  // review", and none either when the estimate is withheld or the estimator did not answer.
+  const estimated = dates.estela !== null && !dates.estela.withheld;
   let verdict: Verdict;
   if (dates.delivered) verdict = "delivered";
   else if (hold) verdict = "on_hold";
   else if (published.kind === "under_review") verdict = "in_progress";
   else if (diffDays(dates.committed, published.day) > 0) verdict = "delayed";
-  else verdict = health === "on_time" ? "on_time" : "in_progress";
+  else verdict = health === "on_time" && estimated ? "on_time" : "in_progress";
 
   // Only a verdict that raises a question gets a reason: an old notice does not explain "On time".
   let reason: CustomerView["reason"] = null;
@@ -234,6 +253,7 @@ export function toCustomerView(input: {
       when: stampOf(entry, published, now),
     }));
 
+  const route = routeOf(shipment, timeline);
   const arrival = milestones.find((milestone) => milestone.code === "VESSEL_ARRIVED");
   const billOfLading = shipment.refs.find((ref) => ref.kind === "bill_of_lading")?.value;
   const container = shipment.cargo.container?.number;
@@ -241,11 +261,21 @@ export function toCustomerView(input: {
   return {
     shipmentId: shipment.id,
     orderRef: shipment.orderRef,
+    originSiteId: shipment.originSiteId,
     consignee: { name: shipment.consignee.name, place: narrowPlace(shipment.consignee.place) },
     cargo: {
       description: shipment.cargo.description,
       packages: shipment.cargo.packages,
       grossWeightKg: shipment.cargo.grossWeightKg,
+    },
+    route: {
+      stops: route.stops.map((stop) => ({
+        place: narrowPlace(stop.place),
+        role: stop.role,
+        gate: stop.gate,
+      })),
+      legs: route.legs.map((leg) => ({ mode: leg.kind })),
+      position: route.position,
     },
     stage: stageOf(timeline),
     verdict,
@@ -266,10 +296,7 @@ export function toCustomerView(input: {
       incoterm: {
         code: shipment.incoterm.code,
         place: shipment.incoterm.place,
-        // DAP and CPT both leave import clearance to the buyer, wherever there is a border to clear.
-        consigneeClearsImport: shipment.sections.some(
-          (section) => section.kind === "port" && section.gate === "import",
-        ),
+        consigneeClearsImport: consigneeClearsImport(shipment),
       },
     },
     documents: documentEvents(own)
@@ -281,6 +308,6 @@ export function toCustomerView(input: {
         at: document.at,
       })),
     notices,
-    lastUpdateAt: timeline.lastFactReceivedAt,
+    lastUpdateAt: timeline.lastFact?.receivedAt ?? null,
   };
 }

@@ -1,6 +1,6 @@
 import type { Channel } from "@/domain/log";
 import type { MilestoneCode } from "@/domain/shipment";
-import { MILESTONE_LABEL } from "@/domain/labels";
+import { MILESTONE_LABEL, plural } from "@/domain/labels";
 import {
   addDays,
   DAY,
@@ -16,10 +16,6 @@ import {
 
 /** Small, shared pieces of wording. Every sentence the application composes is built from these. */
 
-export function plural(count: number, noun: string): string {
-  return `${count} ${noun}${count === 1 ? "" : "s"}`;
-}
-
 const SMALL_NUMBERS = [
   "zero",
   "one",
@@ -34,9 +30,14 @@ const SMALL_NUMBERS = [
   "ten",
 ];
 
-/** A count of days inside a sentence is spelled out: "one day", "two days", "11 days". */
+/** A small count inside a sentence is spelled out: "one", "two", "11". */
+export function spelled(count: number): string {
+  return SMALL_NUMBERS[count] ?? String(count);
+}
+
+/** "one day", "two days", "11 days". */
 export function days(count: number): string {
-  return `${SMALL_NUMBERS[count] ?? count} day${count === 1 ? "" : "s"}`;
+  return `${spelled(count)} day${count === 1 ? "" : "s"}`;
 }
 
 /** "a", "a and b", "a, b and c". */

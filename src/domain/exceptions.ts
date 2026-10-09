@@ -2,10 +2,11 @@ import { assertNever } from "./assert-never";
 import type { ShipmentDates } from "./dates";
 import { documentStatuses } from "./documents";
 import { estimateBasis } from "./estimate";
-import { DOCUMENT_LABEL, HOLD_LABEL, MILESTONE_LABEL } from "./labels";
+import { DOCUMENT_LABEL, HOLD_LABEL, MILESTONE_LABEL, plural } from "./labels";
 import type { ExceptionType, LoggedEvent } from "./log";
 import { caseState, stepsFor, type CaseState, type OpenCase, type Step } from "./playbook";
 import {
+  deadlineZone,
   IBON,
   originPlace,
   type Deadline,
@@ -32,7 +33,6 @@ import {
   instantAt,
   localDate,
   type Instant,
-  type Zone,
 } from "./time";
 
 export type Health = "held" | "delayed" | "at_risk" | "stale" | "on_time" | "delivered";
@@ -77,8 +77,11 @@ export type ShipmentException = {
   /** `declared`: an operator said so. `inferred`: Estela worked it out. `rule`: a deterministic check. */
   basis: "declared" | "inferred" | "rule";
   since: Instant;
-  /** The clock: the deadline with a promise or money attached. */
-  actBy?: { at: Instant; label: string };
+  /**
+   * The clock: the deadline with a promise or money attached. `deadline` is the booking's own
+   * record of it; a clock without one ("customer not yet told") runs from now.
+   */
+  actBy?: { at: Instant; label: string; deadline?: Deadline };
   evidence: EvidenceLine[];
   /** It rests on a model reading that nobody has confirmed yet. */
   needsConfirmation?: true;
@@ -91,10 +94,6 @@ type Finding = OpenCase & {
   evidence: EvidenceLine[];
   deadline?: Deadline;
 };
-
-function plural(count: number, noun: string): string {
-  return `${count} ${noun}${count === 1 ? "" : "s"}`;
-}
 
 function firstOperator(reporters: readonly Source[]): OperatorId | undefined {
   return reporters.find((reporter) => reporter !== IBON);
@@ -126,11 +125,6 @@ function deadlineOf(
     .filter((deadline) => deadline.kind === kind)
     .sort((a, b) => a.at - b.at);
   return ofKind.find((deadline) => deadline.at >= now) ?? ofKind.at(-1);
-}
-
-function zoneOfDeadline(shipment: Shipment, deadline: Deadline, fallback: Zone): Zone {
-  const protectedMilestone = shipment.plan.find((m) => m.key === deadline.milestoneKey);
-  return protectedMilestone?.place.zone ?? fallback;
 }
 
 /** The last time an operator told us something that feeds the dates. */
@@ -269,9 +263,13 @@ function cutoffFinding(
   events: readonly LoggedEvent[],
   now: Instant,
 ): Finding | null {
-  if (findMilestone(timeline, "EXPORT_RELEASED")?.actual) return null;
+  // The release is still ahead: neither confirmed, nor skipped by cargo seen loaded or sailed.
+  const release = findMilestone(timeline, "EXPORT_RELEASED");
+  if (release && release.state !== "next" && release.state !== "upcoming") return null;
+  // A cut-off that passes with the release still ahead is the risk coming true, not its end: the
+  // case stays open, on the missed deadline, until the cargo is released or seen on its way.
   const deadline = shipment.deadlines
-    .filter((d) => d.kind === "export_cutoff" && d.at > now && d.at - now <= CUTOFF_WINDOW)
+    .filter((d) => d.kind === "export_cutoff" && d.at - now <= CUTOFF_WINDOW)
     .sort((a, b) => a.at - b.at)[0];
   if (!deadline) return null;
 
@@ -281,7 +279,7 @@ function cutoffFinding(
   );
   if (blocking.length === 0) return null;
 
-  const zone = zoneOfDeadline(shipment, deadline, originPlace(shipment)?.zone ?? "Europe/Madrid");
+  const zone = deadlineZone(shipment, deadline);
   const forwarderId = forwarderOf(shipment);
   return {
     type: "cutoff_risk",
@@ -337,11 +335,11 @@ function clockOf(
   steps: readonly Step[],
   shipment: Shipment,
   now: Instant,
-): { at: Instant; label: string } | undefined {
+): ShipmentException["actBy"] {
   const untold = steps.some((s) => s.kind === "notify_customer" && s.state !== "done");
   const tellNow = untold ? { at: now, label: "Customer not yet told" } : undefined;
   const from = (deadline: Deadline | undefined) =>
-    deadline ? { at: deadline.at, label: deadline.label } : undefined;
+    deadline ? { at: deadline.at, label: deadline.label, deadline } : undefined;
 
   switch (finding.type) {
     case "delay":

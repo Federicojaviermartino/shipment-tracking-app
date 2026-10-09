@@ -1,4 +1,5 @@
 import { clsx } from "clsx";
+import type { ReactNode } from "react";
 import { AiMark } from "./ai-mark";
 import type { AiReading } from "./ai-words";
 import { assertNever } from "./assert-never";
@@ -48,6 +49,8 @@ export type TimelineEntryData = {
   originals?: readonly OriginalMessage[];
   /** Starts with the original messages shown, for the entry a case points at. */
   originalsOpen?: boolean;
+  /** One quiet control at the end of the caption: what the reader can do about the entry. Operations only. */
+  action?: ReactNode;
   /** Flashes the row once each time this changes: how the user is sent to an entry. */
   flashKey?: string | number;
 };
@@ -262,6 +265,9 @@ export function TimelineEntry({ entry, audience, above, below }: TimelineEntryPr
               <DisclosureTrigger openLabel="Hide original" className="-my-1.5 shrink-0">
                 Show original
               </DisclosureTrigger>
+            )}
+            {audience === "ops" && entry.action && (
+              <span className="-my-1.5 shrink-0">{entry.action}</span>
             )}
           </div>
           {showOriginals && (

@@ -55,6 +55,16 @@ function notFound(reference: string): string {
   return `No ${kind} ${reference} in your shipments.`;
 }
 
+/** The answer to a question that became no filter and no lookup: the rows its words match. */
+export function notUnderstood(text: string, rows: OpsRow[]): AskResult {
+  return {
+    kind: "not_understood",
+    text,
+    message: `Couldn't turn that into filters. Showing text matches for "${text}".`,
+    rows,
+  };
+}
+
 /**
  * Interprets a question and answers it deterministically. The interpreter only ever returns data:
  * a filter runs through the same filter as the manual chips, over rows that are already scoped;
@@ -122,12 +132,7 @@ export async function answerQuestion(input: {
       };
     }
     case "not_understood":
-      return {
-        kind: "not_understood",
-        text,
-        message: `Couldn't turn that into filters. Showing text matches for "${text}".`,
-        rows: applyFilter(scoped, { text }, context.now).map(toRow),
-      };
+      return notUnderstood(text, applyFilter(scoped, { text }, context.now).map(toRow));
     default:
       return assertNever(interpretation);
   }

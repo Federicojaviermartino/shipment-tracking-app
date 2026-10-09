@@ -63,10 +63,9 @@ describe("local dates and instants", () => {
     expect(gap("2026-10-26")).toBe(7 * HOUR);
   });
 
-  test("a wall-clock time that happens twice resolves to one instant, deterministically", () => {
-    const ambiguous = instantAt("2026-10-25", "02:30", "Europe/Madrid");
-    expect(localTime(ambiguous, "Europe/Madrid")).toBe("02:30");
-    expect(instantAt("2026-10-25", "02:30", "Europe/Madrid")).toBe(ambiguous);
+  test("on the night the clocks go back, 01:30 is still summer time and 02:30 is its second occurrence", () => {
+    expect(instantAt("2026-10-25", "01:30", "Europe/Madrid")).toBe(Date.UTC(2026, 9, 24, 23, 30));
+    expect(instantAt("2026-10-25", "02:30", "Europe/Madrid")).toBe(Date.UTC(2026, 9, 25, 1, 30));
   });
 
   test("rejects what is not a date or a time", () => {
@@ -74,6 +73,13 @@ describe("local dates and instants", () => {
     expect(() => instantAt("07/10/2026", "10:00", "Europe/Madrid")).toThrow(RangeError);
     expect(() => instantAt("2026-10-07", "10h", "Europe/Madrid")).toThrow(RangeError);
   });
+
+  test.each(["24:00", "23:60", "99:99"])(
+    "rejects %s, a time of day that does not exist, instead of rolling over into another day",
+    (time) => {
+      expect(() => instantAt("2026-10-07", time, "Europe/Madrid")).toThrow(RangeError);
+    },
+  );
 
   test("writes an instant with the offset of its zone", () => {
     const instant = instantAt("2026-09-22", "08:31", "Europe/Madrid");
