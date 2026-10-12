@@ -188,5 +188,4 @@ Specification first, AI coding agents second, checks throughout.
   this document claimed more than the code enforced. The defects were fixed at their cause, each
   with a regression test, and the claims were corrected.
 
-That method explains the size of the repository. The build took about seven hours of elapsed time;
-the review and its fixes took about two more.
+That method explains the size of the repository.
