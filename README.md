@@ -12,7 +12,8 @@ status and every date says where it came from**, and builds two views on it:
 
 Everything is mocked and runs in the browser: no backend, no database, synthetic data only. The
 reasoning behind the cut, the AI features and the architecture is in
-[`docs/write-up.md`](docs/write-up.md).
+[`docs/write-up.md`](docs/write-up.md). The specification the build started from, and where the code
+departs from it, is in [`docs/spec`](docs/spec/README.md).
 
 ## Run it
 

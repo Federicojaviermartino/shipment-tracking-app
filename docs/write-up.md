@@ -171,8 +171,9 @@ Specification first, AI coding agents second, checks throughout.
   logistics veteran. The reviews cut the scope sharply and corrected the domain: one ocean lane
   instead of two, no invented percentages, a clock frozen on a working day, DAP semantics.
 - **Specification.** The outcome was a written specification in six parts (architecture, domain,
-  world, application, interface, testing). Every implementation agent started from it, so the context
-  each one worked with was the same and was small.
+  world, application, interface, testing), published in [`docs/spec`](spec/README.md) with the list
+  of where the code departs from it. Every implementation agent started from it, so the context each
+  one worked with was the same and was small.
 - **Implementation.** Agents worked in stages, with disjoint file ownership and a written hand-over
   between stages: inner layers, outer layers, the design system in parallel, then the three screens
   in parallel against the gateway's view types.
