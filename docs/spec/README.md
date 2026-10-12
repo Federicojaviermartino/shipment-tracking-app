@@ -59,6 +59,9 @@ gives way to what is domain-correct. These are the differences that matter.
   version alone: staleness, cut-offs and "never in the past" read the clock.
 - **Tests compose the core with `ManualClock`.** The multi-step stories need time to pass between
   steps; `FixedClock` was dropped.
+- **A sixth persona signs in for the subsidiary.** Part 2 lists five personas and gives Ibón
+  Deutschland shipments but nobody to see them. The brief names the subsidiary as a self-service
+  user, so Jonas Weber gets the same portal as a customer, over that account.
 - **The active persona lives in a module-level store** read with `useSyncExternalStore`, not in a
   React context. Next.js keeps a hidden layout mounted with its state, and the end-to-end test
   caught the persona of one role layout leaking into the other.

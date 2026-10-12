@@ -432,7 +432,7 @@ describe("shipments", () => {
     const siteIds = SITES.map((site) => site.id);
     expect(SHIPMENTS.filter((s) => !siteIds.includes(s.originSiteId))).toEqual([]);
     expect(PERSONAS.map((actor) => SHIPMENTS.filter((s) => inScope(actor, s)).length)).toEqual([
-      23, 5, 13, 8, 5,
+      23, 5, 13, 8, 5, 4,
     ]);
   });
 });

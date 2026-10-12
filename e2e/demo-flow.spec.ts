@@ -118,4 +118,12 @@ test("the demo flow: from an operator event to a customer who hears it first", a
     await switchPersona(page, "Iker Zabala");
     await expect(page.getByText("We couldn't find that shipment.")).toBeVisible();
   });
+
+  await test.step("the subsidiary signs in to the same portal, over its own shipments", async () => {
+    await switchPersona(page, "Jonas Weber");
+    await expect(page).toHaveURL(/\/portal$/);
+    await expect(page.getByText("Ibón Deutschland GmbH")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "2 shipments on the way." })).toBeVisible();
+    await expect(page.getByRole("link", { name: /^Order / })).toHaveCount(4);
+  });
 });

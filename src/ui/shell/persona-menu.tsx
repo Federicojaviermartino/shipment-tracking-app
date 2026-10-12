@@ -32,7 +32,7 @@ type PersonaMenuProps = {
 
 const SIDES = [
   { side: "operations", label: "Operations" },
-  { side: "customer", label: "Customer" },
+  { side: "customer", label: "Customer and subsidiary" },
 ] as const;
 
 /** Switches the signed-in persona. It opens upward from the demo bar. */

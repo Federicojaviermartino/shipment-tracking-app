@@ -76,7 +76,7 @@ export const CONSIGNEES = {
   edarMalaga: { accountId: "HIS", name: "EDAR project site, Málaga", place: MALAGA },
 } satisfies Record<string, Consignee>;
 
-/** The five demo personas. The first one is the default. */
+/** The six demo personas. The first one is the default. */
 export const PERSONAS: Actor[] = [
   {
     kind: "internal",
@@ -118,5 +118,12 @@ export const PERSONAS: Actor[] = [
     name: "Camille Roussel",
     title: "Supply Manager, Vauclair",
     accountId: "VAU",
+  },
+  {
+    kind: "external",
+    userId: "jonas.weber",
+    name: "Jonas Weber",
+    title: "Warehouse Lead, Ibón Deutschland",
+    accountId: "IDE",
   },
 ];

@@ -503,7 +503,7 @@ describe("the queue at T0", () => {
     expect(highlight?.caption).toBe("Written by AI from the 2 nearest deadlines");
   });
 
-  test("the five personas, each with its side and its perimeter in words", async () => {
+  test("the six personas, each with its side and its perimeter in words", async () => {
     const { estela } = await startEstela();
     expect(estela.actors().map((actor) => actor.name)).toEqual([
       "Marta Soler",
@@ -511,6 +511,7 @@ describe("the queue at T0", () => {
       "Lucía Ferrer",
       "Mariana Olvera",
       "Camille Roussel",
+      "Jonas Weber",
     ]);
     expect(estela.demo.personas().map((persona) => [persona.side, persona.perimeter])).toEqual([
       ["operations", "All sites, all accounts · 23 shipments"],
@@ -518,7 +519,24 @@ describe("the queue at T0", () => {
       ["operations", "Aquabajío Ingeniería and Vauclair Hydraulique, any site · 13 shipments"],
       ["customer", "Aquabajío Ingeniería · 8 shipments"],
       ["customer", "Vauclair Hydraulique · 5 shipments"],
+      ["customer", "Ibón Deutschland · 4 shipments"],
     ]);
+  });
+
+  test("Jonas, at the subsidiary, gets the customer portal over its 4 shipments", async () => {
+    const { estela, jonas } = await startEstela();
+    const home = await estela.portal.home(jonas);
+    expect(home.account.name).toBe("Ibón Deutschland GmbH");
+    expect(home.summary).toBe("2 shipments on the way.");
+    expect(home.attention).toEqual([]);
+    expect(home.onTheWay.map((row) => row.id)).toEqual(["EST-4127", "EST-4136"]);
+    expect(home.delivered.map((row) => row.id)).toEqual(["EST-4111", "EST-4107"]);
+
+    // The truck that went silent keeps the carrier's date and is not called on time.
+    const silent = await estela.portal.shipment(jonas, "EST-4127");
+    expect(silent?.verdictLabel).toBe("On the way");
+    expect(silent?.published).toMatchObject({ kind: "estimated", by: "carrier" });
+    expect((await estela.portal.shipment(jonas, "EST-4136"))?.verdictLabel).toBe("On time");
   });
 
   test("Iker, at the Abadiño plant, sees 5 shipments and one case", async () => {

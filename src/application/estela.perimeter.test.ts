@@ -55,14 +55,28 @@ describe("queries", () => {
     expect(home.account.name).toBe("Vauclair Hydraulique SAS");
   });
 
+  test("a subsidiary is an account like any other: its own shipments, and nobody else's", async () => {
+    const { estela, marta, mariana, jonas } = await startEstela();
+    const home = await estela.portal.home(jonas);
+    const ids = [...home.attention, ...home.onTheWay, ...home.delivered].map((card) => card.id);
+    const subsidiary = (await estela.ops.shipments(marta, { view: "all" }))
+      .filter((row) => row.account.type === "subsidiary")
+      .map((row) => row.id);
+    expect(subsidiary).toHaveLength(4);
+    expect(ids.sort()).toEqual(subsidiary.sort());
+    // EST-4058 is Aquabajío's and EST-4127 is the subsidiary's: neither exists for the other.
+    expect(await estela.portal.shipment(jonas, "EST-4058")).toBeNull();
+    expect(await estela.portal.shipment(mariana, "EST-4127")).toBeNull();
+  });
+
   test("nothing a customer is sent names an operator: the route says how the cargo travels, not with whom", async () => {
-    const { estela, marta, mariana, camille } = await startEstela();
+    const { estela, marta, mariana, camille, jonas } = await startEstela();
     const operators = (await estela.ops.overview(marta)).filterOptions.operators;
     expect(operators.map((operator) => operator.name)).toEqual(
       expect.arrayContaining(["Transportes Cierzo", "Noray Lines", "Turia Global Forwarding"]),
     );
 
-    for (const customer of [mariana, camille]) {
+    for (const customer of [mariana, camille, jonas]) {
       const home = await estela.portal.home(customer);
       const ids = [...home.attention, ...home.onTheWay, ...home.delivered].map((card) => card.id);
       const pages = await Promise.all(ids.map((id) => estela.portal.shipment(customer, id)));
@@ -229,9 +243,9 @@ describe("commands", () => {
 
 describe("live updates", () => {
   test("a change is announced to those who may see it, and to nobody else", async () => {
-    const { estela, clock, marta, iker, lucia, mariana, camille } = await startEstela();
+    const { estela, clock, marta, iker, lucia, mariana, camille, jonas } = await startEstela();
     const heard = new Map<string, Change[]>();
-    for (const actor of [marta, iker, lucia, mariana, camille]) {
+    for (const actor of [marta, iker, lucia, mariana, camille, jonas]) {
       heard.set(actor.userId, []);
       estela.subscribe(actor, (change) => heard.get(actor.userId)?.push(change));
     }
@@ -246,6 +260,7 @@ describe("live updates", () => {
     expect(heard.get("mariana.olvera")?.map((change) => change.shipmentIds)).toEqual([both]);
     expect(heard.get("iker.zabala")).toEqual([]);
     expect(heard.get("camille.roussel")).toEqual([]);
+    expect(heard.get("jonas.weber")).toEqual([]);
   });
 
   test("an operator's name and words reach operations, never a customer", async () => {

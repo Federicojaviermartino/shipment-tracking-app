@@ -57,8 +57,9 @@ operator events and resets the world.
    a shipment that is not from his site: it does not exist for him.
 
 Also worth a look: `how much duty did we pay on order 48190?` (an honest refusal), EST-4127 (stale:
-the estimate is withheld, with the reason), and Lucía Ferrer, whose role may notify customers but not
-send documents.
+the estimate is withheld, with the reason), Lucía Ferrer, whose role may notify customers but not
+send documents, and Jonas Weber, who signs in for the subsidiary, Ibón Deutschland: the same portal as
+a customer, over its four shipments.
 
 ## What is where
 

@@ -7,7 +7,7 @@ import { SHIPMENTS } from "@/fixtures";
 import { createTestEstela } from "./create-estela";
 
 /**
- * The whole core at T0 with the five demo personas at hand, for the integration tests. Each test
+ * The whole core at T0 with the six demo personas at hand, for the integration tests. Each test
  * starts its own world: nothing is shared, so the order of tests cannot matter.
  */
 export async function startEstela(options: Parameters<typeof createTestEstela>[0] = {}) {
@@ -52,5 +52,7 @@ export async function startEstela(options: Parameters<typeof createTestEstela>[0
     mariana: external("mariana.olvera"),
     /** Customer, Vauclair. */
     camille: external("camille.roussel"),
+    /** The subsidiary, Ibón Deutschland: an external account like any other. */
+    jonas: external("jonas.weber"),
   };
 }
